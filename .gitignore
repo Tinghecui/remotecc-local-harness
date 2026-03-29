@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.js.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+.remote-cc.env
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Lock files (keep package-lock)
+yarn.lock
+pnpm-lock.yaml
