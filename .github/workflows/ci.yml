@@ -52,9 +52,8 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: .
+          severity: error
           additional_files: setup.sh install.sh
-        env:
-          SHELLCHECK_OPTS: -e SC2086 -e SC2046 -e SC2034
 
   install-test:
     runs-on: ${{ matrix.os }}
