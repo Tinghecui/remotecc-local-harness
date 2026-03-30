@@ -14,13 +14,13 @@ app.use(express.json());
 
 // OAuth 探测 - 告诉客户端不需要认证
 app.get("/.well-known/oauth-authorization-server", (_req, res) => {
-  res.status(404).end();
+  res.status(404).json({});
 });
 app.get("/.well-known/oauth-protected-resource", (_req, res) => {
-  res.status(404).end();
+  res.status(404).json({});
 });
 app.post("/register", (_req, res) => {
-  res.status(404).end();
+  res.status(404).json({});
 });
 
 // 健康检查

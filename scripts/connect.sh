@@ -85,6 +85,26 @@ if command -v jq &>/dev/null && [ -f "$HOME/.claude.json" ]; then
     done < <(jq -r '.mcpServers // {} | to_entries[] | select(.value.type == "sse") | {name: .key, url: .value.url} | @json' "$HOME/.claude.json" 2>/dev/null)
 fi
 
+# ============================================================
+# 检测 stdio MCP 代理（由 start-bridge.sh 启动）
+# ============================================================
+STDIO_PROXIES_FILE="/tmp/remote-cc-stdio-proxies.json"
+if [ -f "$STDIO_PROXIES_FILE" ]; then
+    while IFS= read -r proxy_entry; do
+        [ -z "$proxy_entry" ] && continue
+        mcp_name=$(echo "$proxy_entry" | jq -r '.name')
+        mcp_url=$(echo "$proxy_entry" | jq -r '.url')
+        mcp_port=$(echo "$mcp_url" | sed -n 's|.*://[^:]*:\([0-9]*\).*|\1|p')
+
+        if [ -z "$mcp_port" ]; then continue; fi
+        if echo "$SSE_MCP_PORTS_SEEN" | grep -q ":${mcp_port}:"; then continue; fi
+        SSE_MCP_PORTS_SEEN="${SSE_MCP_PORTS_SEEN}:${mcp_port}:"
+
+        echo "  Found stdio proxy: $mcp_name → port $mcp_port"
+        SSE_MCP_TUNNELS="$SSE_MCP_TUNNELS -R $mcp_port:localhost:$mcp_port"
+    done < "$STDIO_PROXIES_FILE"
+fi
+
 # 上传本地 CLAUDE.md 文件（用户级 + 项目级）
 ssh "$CLOUD_HOST" "rm -f /tmp/local-claude-user.md /tmp/local-claude-project.md" 2>/dev/null
 
@@ -132,11 +152,26 @@ ssh "$CLOUD_HOST" "rm -rf /tmp/local-settings-*.json /tmp/local-skills-* /tmp/lo
 [ -d "$LOCAL_WORKDIR/.claude/skills" ] && [ "$(ls -A "$LOCAL_WORKDIR/.claude/skills" 2>/dev/null)" ] && \
     scp -q -r "$LOCAL_WORKDIR/.claude/skills" "$CLOUD_HOST:/tmp/local-skills-project"
 
-# 上传 SSE MCP 列表供云端注册
-if [ -n "$SSE_MCP_TUNNELS" ]; then
-    jq -r '.mcpServers // {} | to_entries[] | select(.value.type == "sse") | {name: .key, url: .value.url} | @json' "$HOME/.claude.json" 2>/dev/null \
-        | ssh "$CLOUD_HOST" "cat > /tmp/local-sse-mcps.json"
-    echo "  SSE MCP list: uploaded"
+# 上传 SSE MCP 列表供云端注册（包括原生 SSE + stdio 代理）
+SSE_MCP_LIST=""
+# 原生 SSE MCPs
+if command -v jq &>/dev/null && [ -f "$HOME/.claude.json" ]; then
+    SSE_MCP_LIST=$(jq -r '.mcpServers // {} | to_entries[] | select(.value.type == "sse") | {name: .key, url: .value.url} | @json' "$HOME/.claude.json" 2>/dev/null)
+fi
+# Stdio proxy MCPs
+if [ -f "$STDIO_PROXIES_FILE" ]; then
+    STDIO_LIST=$(cat "$STDIO_PROXIES_FILE")
+    if [ -n "$SSE_MCP_LIST" ]; then
+        SSE_MCP_LIST="$SSE_MCP_LIST
+$STDIO_LIST"
+    else
+        SSE_MCP_LIST="$STDIO_LIST"
+    fi
+fi
+
+if [ -n "$SSE_MCP_LIST" ]; then
+    echo "$SSE_MCP_LIST" | ssh "$CLOUD_HOST" "cat > /tmp/local-sse-mcps.json"
+    echo "  SSE MCP list: uploaded (includes stdio proxies)"
 else
     ssh "$CLOUD_HOST" "rm -f /tmp/local-sse-mcps.json" 2>/dev/null
 fi
