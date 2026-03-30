@@ -18,16 +18,21 @@ if [ -n "$FILE_PATH" ]; then
     esac
 fi
 
-cat << 'EOF'
+LOCAL_DIR="${REMOTE_CC_LOCAL_DIR:-unknown}"
+cat << EOF
 DENIED: Built-in tools are disabled in this cloud environment.
-All file operations and commands must execute on the local machine via MCP.
+All operations must target the LOCAL machine via MCP tools.
+
+Local working directory: $LOCAL_DIR
 
 Use these MCP tools instead:
-  local__read_file   → Read a file
+  local__read_file   → Read a file (e.g. $LOCAL_DIR/src/foo.ts)
   local__edit_file   → Edit a file
   local__write_file  → Create/overwrite a file
-  local__bash        → Execute a shell command
+  local__bash        → Execute a shell command (runs on local machine)
   local__glob        → Find files by pattern
   local__grep        → Search file contents
+
+Do NOT use /root/workspace or any cloud paths. All file paths must start with $LOCAL_DIR.
 EOF
 exit 2
