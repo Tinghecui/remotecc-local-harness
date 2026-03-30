@@ -146,8 +146,28 @@ fi
 # -R: 反向隧道，让云端 localhost:PORT 指向本地 localhost:PORT
 # SSE_MCP_TUNNELS: 额外的 SSE MCP 隧道端口
 # LOCAL_WORKDIR: 传递本地工作目录，用于生成 CLAUDE.md 上下文
-ssh -t \
-    -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" \
-    $SSE_MCP_TUNNELS \
-    "$CLOUD_HOST" \
-    "export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && /opt/remote-cc/prepare-session.sh && cd ~/workspace && claude"
+# SSH with keepalive and auto-reconnect
+MAX_RETRIES=5
+RETRY_DELAY=3
+
+for _attempt in $(seq 1 $MAX_RETRIES); do
+    ssh -t \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=3 \
+        -o ExitOnForwardFailure=yes \
+        -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" \
+        $SSE_MCP_TUNNELS \
+        "$CLOUD_HOST" \
+        "export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && /opt/remote-cc/prepare-session.sh && cd ~/workspace && claude"
+
+    EXIT_CODE=$?
+    # Exit code 0 = normal exit (user typed /exit or Ctrl+D)
+    [ $EXIT_CODE -eq 0 ] && break
+    # Exit code 130 = Ctrl+C
+    [ $EXIT_CODE -eq 130 ] && break
+
+    echo ""
+    echo "Connection lost (exit code $EXIT_CODE). Retry $_attempt/$MAX_RETRIES in ${RETRY_DELAY}s..."
+    sleep $RETRY_DELAY
+    RETRY_DELAY=$((RETRY_DELAY * 2))
+done

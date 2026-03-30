@@ -262,6 +262,33 @@ This is the user's real working directory on their local Mac. When referencing f
 - When showing file paths to the user, show the local path (e.g. \`$LOCAL_DIR/src/foo.ts\`)
 - Do NOT reference \`~/workspace\` or any cloud paths — the user only cares about their local files
 - You are effectively working as if you were running locally at \`$LOCAL_DIR\`
+
+## Agent Subagent Guidance
+
+When using the Agent tool to spawn subagents, the subagent also has access to \`local__*\` MCP tools.
+**Always include in your agent prompt:**
+- "Use local__read_file, local__edit_file, local__write_file, local__bash, local__glob, local__grep for all file operations"
+- "All file paths start with $LOCAL_DIR"
+- "Do NOT use built-in Read/Edit/Write/Bash/Glob/Grep tools — they are blocked"
+
+## Plan Mode
+
+When in plan mode, use \`local__read_file\` and \`local__grep\` for research.
+The \`local__*\` tools are fully capable read-only research tools — treat them exactly like the built-in equivalents.
+
+## Binary File Support
+
+\`local__read_file\` supports images (PNG, JPG, GIF, WebP, SVG, BMP, ICO) — it returns image content directly, just like the built-in Read tool.
+For PDF files, it extracts text content automatically (requires poppler).
+
+## Grep Advanced Usage
+
+\`local__grep\` supports the same features as the built-in Grep:
+- \`output_mode\`: "content" (matching lines), "files_with_matches" (file paths, default), "count"
+- \`context\` / \`before_context\` / \`after_context\`: context lines around matches
+- \`type\`: file type filter (e.g. "js", "py", "ts")
+- \`multiline\`: cross-line pattern matching
+- \`head_limit\`: limit number of results (default 250)
 CLAUDEMD
 
 # ============================================================

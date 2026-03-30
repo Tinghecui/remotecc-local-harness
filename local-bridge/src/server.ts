@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFile, writeFile, stat, mkdir } from "fs/promises";
 import { spawn } from "child_process";
-import { dirname } from "path";
+import { dirname, extname } from "path";
 import fg from "fast-glob";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -10,6 +10,21 @@ import type { BridgeConfig } from "./config.js";
 import { assertSafePath, assertSafeCommand, isPathInside, log } from "./security.js";
 
 const execFileAsync = promisify(execFile);
+
+const IMAGE_EXTS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+]);
+
+const MIME_MAP: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+};
 
 export function createMcpServer(config: BridgeConfig): McpServer {
   const server = new McpServer({
@@ -20,7 +35,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
   // ==================== read_file ====================
   server.tool(
     "read_file",
-    "Read a file from the local filesystem. Returns content with line numbers.",
+    "Read a file from the local filesystem. Returns content with line numbers. Supports images (PNG, JPG, GIF, WebP, etc.) — returns image content directly.",
     {
       file_path: z.string().describe("Absolute path to the file"),
       offset: z.number().optional().describe("Line number to start from (0-based)"),
@@ -29,6 +44,43 @@ export function createMcpServer(config: BridgeConfig): McpServer {
     async ({ file_path, offset, limit }) => {
       log(config, "read_file", { file_path, offset, limit });
       const safe = assertSafePath(file_path, config);
+      const ext = extname(file_path).toLowerCase();
+
+      // Image files: return as MCP image content
+      if (IMAGE_EXTS.has(ext)) {
+        const buf = await readFile(safe);
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: buf.toString("base64"),
+              mimeType: MIME_MAP[ext] || "application/octet-stream",
+            },
+          ],
+        };
+      }
+
+      // PDF files: extract text via pdftotext if available, otherwise return info
+      if (ext === ".pdf") {
+        try {
+          const { stdout } = await execFileAsync("pdftotext", [safe, "-"], {
+            timeout: 30000,
+            maxBuffer: 2 * 1024 * 1024,
+          });
+          return { content: [{ type: "text" as const, text: stdout }] };
+        } catch {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `PDF file: ${file_path}\npdftotext not available. Install poppler to extract text: brew install poppler`,
+              },
+            ],
+          };
+        }
+      }
+
+      // Text files: existing behavior
       const content = await readFile(safe, "utf-8");
       const lines = content.split("\n");
       const start = offset ?? 0;
@@ -37,7 +89,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
       const numbered = sliced
         .map((line, i) => `${start + i + 1}\t${line}`)
         .join("\n");
-      return { content: [{ type: "text", text: numbered }] };
+      return { content: [{ type: "text" as const, text: numbered }] };
     }
   );
 
@@ -65,7 +117,10 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         );
       }
 
+      let editStart: number;
+
       if (replace_all) {
+        editStart = content.indexOf(old_string);
         content = content.replaceAll(old_string, new_string);
       } else {
         // 确保 old_string 是唯一的
@@ -76,6 +131,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
             "old_string is not unique in the file. Provide more context or use replace_all."
           );
         }
+        editStart = firstIdx;
         content =
           content.slice(0, firstIdx) +
           new_string +
@@ -83,7 +139,25 @@ export function createMcpServer(config: BridgeConfig): McpServer {
       }
 
       await writeFile(safe, content);
-      return { content: [{ type: "text", text: `OK: edited ${file_path}` }] };
+
+      // Return snippet around the edit for confirmation
+      const lines = content.split("\n");
+      const editLine = content.slice(0, editStart).split("\n").length - 1;
+      const snippetStart = Math.max(0, editLine - 3);
+      const snippetEnd = Math.min(lines.length, editLine + new_string.split("\n").length + 3);
+      const snippet = lines
+        .slice(snippetStart, snippetEnd)
+        .map((line, i) => `${snippetStart + i + 1}\t${line}`)
+        .join("\n");
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `OK: edited ${file_path}\n\n${snippet}`,
+          },
+        ],
+      };
     }
   );
 
@@ -100,7 +174,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
       const safe = assertSafePath(file_path, config);
       await mkdir(dirname(safe), { recursive: true });
       await writeFile(safe, fileContent);
-      return { content: [{ type: "text", text: `OK: wrote ${file_path}` }] };
+      return { content: [{ type: "text" as const, text: `OK: wrote ${file_path}` }] };
     }
   );
 
@@ -118,12 +192,39 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         .number()
         .optional()
         .describe("Timeout in milliseconds (default: 120000)"),
+      description: z
+        .string()
+        .optional()
+        .describe("Human-readable description of what this command does"),
+      run_in_background: z
+        .boolean()
+        .optional()
+        .describe("Run command in background and return PID immediately"),
     },
-    async ({ command, cwd, timeout }) => {
-      log(config, "bash", { command, cwd });
+    async ({ command, cwd, timeout, description, run_in_background }) => {
+      log(config, "bash", { command, cwd, description });
       assertSafeCommand(command, config);
 
       const workdir = cwd ? assertSafePath(cwd, config) : config.allowedRoots[0];
+
+      // Background mode: spawn detached and return PID
+      if (run_in_background) {
+        const proc = spawn("bash", ["-c", command], {
+          cwd: workdir,
+          detached: true,
+          stdio: "ignore",
+        });
+        proc.unref();
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Background PID: ${proc.pid}`,
+            },
+          ],
+        };
+      }
+
       const timeoutMs = timeout ?? config.commandTimeout;
 
       return new Promise((resolve) => {
@@ -156,7 +257,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
           resolve({
             content: [
               {
-                type: "text",
+                type: "text" as const,
                 text: JSON.stringify(
                   { stdout, stderr, exitCode: code ?? 1 },
                   null,
@@ -171,7 +272,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
           resolve({
             content: [
               {
-                type: "text",
+                type: "text" as const,
                 text: JSON.stringify(
                   { stdout, stderr: err.message, exitCode: 1 },
                   null,
@@ -188,35 +289,58 @@ export function createMcpServer(config: BridgeConfig): McpServer {
   // ==================== glob ====================
   server.tool(
     "glob",
-    "Find files matching a glob pattern in a directory.",
+    "Fast file pattern matching tool. Supports glob patterns like '**/*.js'. Returns matching file paths sorted by modification time (newest first).",
     {
       pattern: z.string().describe("Glob pattern (e.g. '**/*.ts', 'src/**/*.js')"),
       path: z
         .string()
         .optional()
         .describe("Base directory to search in (default: first allowed root)"),
+      head_limit: z
+        .number()
+        .optional()
+        .describe("Limit number of results returned (default: 250)"),
     },
-    async ({ pattern, path }) => {
+    async ({ pattern, path, head_limit }) => {
       log(config, "glob", { pattern, path });
       const base = path ? assertSafePath(path, config) : config.allowedRoots[0];
+      const limit = head_limit ?? 250;
+
       const files = await fg(pattern, {
         cwd: base,
         absolute: true,
         onlyFiles: true,
         followSymbolicLinks: false,
         ignore: ["**/node_modules/**", "**/.git/**"],
+        stats: true,
       });
 
       // 验证所有结果都在允许范围内
       const safeFiles = files.filter((f) =>
-        config.allowedRoots.some((root) => isPathInside(root, f))
+        config.allowedRoots.some((root) => isPathInside(root, typeof f === "string" ? f : f.path))
       );
+
+      // Sort by modification time (newest first)
+      const withStats = await Promise.all(
+        safeFiles.map(async (f) => {
+          const filePath = typeof f === "string" ? f : f.path;
+          try {
+            const s = await stat(filePath);
+            return { path: filePath, mtime: s.mtimeMs };
+          } catch {
+            return { path: filePath, mtime: 0 };
+          }
+        })
+      );
+      withStats.sort((a, b) => b.mtime - a.mtime);
+
+      const limited = withStats.slice(0, limit).map((f) => f.path);
 
       return {
         content: [
           {
-            type: "text",
-            text: safeFiles.length > 0 ? safeFiles.join("\n") : "No files found",
+            type: "text" as const,
+            text: limited.length > 0 ? limited.join("\n") : "No files found",
           },
         ],
       };
@@ -226,7 +350,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
   // ==================== grep ====================
   server.tool(
     "grep",
-    "Search file contents using ripgrep. Returns matching lines with file paths and line numbers.",
+    "Search file contents using ripgrep. Supports regex, output modes (content/files_with_matches/count), context lines, and file type filtering.",
     {
       pattern: z.string().describe("Regex pattern to search for"),
       path: z
@@ -238,36 +362,90 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         .optional()
         .describe("File glob filter (e.g. '*.ts', '*.{js,jsx}')"),
       ignore_case: z.boolean().optional().describe("Case insensitive search"),
+      output_mode: z
+        .enum(["content", "files_with_matches", "count"])
+        .optional()
+        .describe("Output mode (default: files_with_matches)"),
+      context: z.number().optional().describe("Lines of context around each match (-C)"),
+      before_context: z.number().optional().describe("Lines before each match (-B)"),
+      after_context: z.number().optional().describe("Lines after each match (-A)"),
+      head_limit: z
+        .number()
+        .optional()
+        .describe("Limit output entries (default: 250)"),
+      type: z
+        .string()
+        .optional()
+        .describe("File type filter (e.g. 'js', 'py', 'ts')"),
+      multiline: z
+        .boolean()
+        .optional()
+        .describe("Enable multiline matching where . matches newlines"),
     },
-    async ({ pattern, path, glob: fileGlob, ignore_case }) => {
-      log(config, "grep", { pattern, path, glob: fileGlob });
+    async ({
+      pattern,
+      path,
+      glob: fileGlob,
+      ignore_case,
+      output_mode,
+      context,
+      before_context,
+      after_context,
+      head_limit,
+      type: fileType,
+      multiline,
+    }) => {
+      log(config, "grep", { pattern, path, glob: fileGlob, output_mode });
       const base = path ? assertSafePath(path, config) : config.allowedRoots[0];
+      const mode = output_mode ?? "files_with_matches";
+      const limit = head_limit ?? 250;
 
-      const args = ["--color=never", "-n", "--no-heading"];
+      const args = ["--color=never", "--no-heading"];
+
+      // Output mode
+      if (mode === "files_with_matches") {
+        args.push("-l");
+      } else if (mode === "count") {
+        args.push("-c");
+      } else {
+        // content mode
+        args.push("-n");
+      }
+
       if (ignore_case) args.push("-i");
       if (fileGlob) args.push("--glob", fileGlob);
+      if (fileType) args.push("--type", fileType);
+      if (multiline) args.push("-U", "--multiline-dotall");
+
+      // Context (only meaningful for content mode)
+      if (mode === "content") {
+        if (context != null) args.push("-C", String(context));
+        if (before_context != null) args.push("-B", String(before_context));
+        if (after_context != null) args.push("-A", String(after_context));
+      }
+
       args.push("--", pattern, base);
 
       try {
         const { stdout } = await execFileAsync("rg", args, {
           timeout: 30000,
-          maxBuffer: 1024 * 1024,
+          maxBuffer: 2 * 1024 * 1024,
         });
-        // 限制输出行数
-        const lines = stdout.split("\n");
+
+        // Apply head_limit
+        const lines = stdout.split("\n").filter((l) => l !== "");
         const limited =
-          lines.length > 500
-            ? lines.slice(0, 500).join("\n") + `\n... [${lines.length - 500} more lines]`
-            : stdout;
-        return { content: [{ type: "text", text: limited }] };
+          lines.length > limit
+            ? lines.slice(0, limit).join("\n") + `\n... [${lines.length - limit} more entries]`
+            : lines.join("\n");
+        return { content: [{ type: "text" as const, text: limited || "No matches found" }] };
       } catch (e: unknown) {
         const err = e as { stdout?: string; code?: number };
         if (err.code === 1) {
-          // rg exit code 1 = no matches
-          return { content: [{ type: "text", text: "No matches found" }] };
+          return { content: [{ type: "text" as const, text: "No matches found" }] };
         }
         return {
-          content: [{ type: "text", text: err.stdout || "grep error" }],
+          content: [{ type: "text" as const, text: err.stdout || "grep error" }],
         };
       }
     }

@@ -19,20 +19,20 @@ if [ -n "$FILE_PATH" ]; then
 fi
 
 LOCAL_DIR="${REMOTE_CC_LOCAL_DIR:-unknown}"
+
+# 提取工具名称
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // "unknown"' 2>/dev/null)
+
 cat << EOF
-DENIED: Built-in tools are disabled in this cloud environment.
-All operations must target the LOCAL machine via MCP tools.
+BLOCKED: Built-in "$TOOL_NAME" is disabled — use MCP equivalent instead.
 
-Local working directory: $LOCAL_DIR
+  Read   → local__read_file   (supports images & PDF)
+  Edit   → local__edit_file
+  Write  → local__write_file
+  Bash   → local__bash        (runs on local Mac)
+  Glob   → local__glob
+  Grep   → local__grep        (supports output_mode, context, type)
 
-Use these MCP tools instead:
-  local__read_file   → Read a file (e.g. $LOCAL_DIR/src/foo.ts)
-  local__edit_file   → Edit a file
-  local__write_file  → Create/overwrite a file
-  local__bash        → Execute a shell command (runs on local machine)
-  local__glob        → Find files by pattern
-  local__grep        → Search file contents
-
-Do NOT use /root/workspace or any cloud paths. All file paths must start with $LOCAL_DIR.
+All paths must start with: $LOCAL_DIR
 EOF
 exit 2
