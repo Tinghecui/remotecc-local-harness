@@ -34,5 +34,7 @@ BLOCKED: Built-in "$TOOL_NAME" is disabled — use MCP equivalent instead.
   Grep   → local__grep        (supports output_mode, context, type)
 
 All paths must start with: $LOCAL_DIR
+
+Exception: Plans and memory files are written to cloud (~/.claude/*) using built-in tools.
 EOF
 exit 2

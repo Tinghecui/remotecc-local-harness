@@ -322,10 +322,20 @@ When using the Agent tool to spawn subagents, the subagent also has access to \`
 - "All file paths start with $LOCAL_DIR"
 - "Do NOT use built-in Read/Edit/Write/Bash/Glob/Grep tools — they are blocked"
 
+## Cloud-Side Files (Plans, Memory, Tasks)
+
+Plans, memory, and task files live on the **cloud VPS** under \`~/.claude/\`. For these files:
+- **Use built-in Read/Write/Edit tools** (they are NOT blocked for \`~/.claude/*\` paths)
+- Do NOT use \`local__*\` MCP tools for cloud paths — they operate on the local Mac filesystem
+- Examples of cloud paths: \`/root/.claude/plans/\`, \`/root/.claude/projects/.../memory/\`
+
+When spawning Plan or other subagents that need to write plans/memory, do NOT include "use local__* tools" instructions for cloud-side file operations.
+
 ## Plan Mode
 
-When in plan mode, use \`local__read_file\` and \`local__grep\` for research.
-The \`local__*\` tools are fully capable read-only research tools — treat them exactly like the built-in equivalents.
+When in plan mode, use \`local__read_file\` and \`local__grep\` for research on LOCAL files.
+Use built-in Read/Glob/Grep for cloud-side files (\`~/.claude/*\`, \`~/workspace/*\`).
+The \`local__*\` tools are fully capable read-only research tools — treat them exactly like the built-in equivalents for local files.
 
 ## Binary File Support
 
