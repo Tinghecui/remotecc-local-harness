@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # Run CI first
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          TAG=${GITHUB_REF#refs/tags/}
+
+          if [ -n "$PREV_TAG" ]; then
+            CHANGES=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD)
+          else
+            CHANGES=$(git log --pretty=format:"- %s" HEAD~10..HEAD)
+          fi
+
+          # Write to file for multiline support
+          cat > /tmp/release-notes.md << EOF
+          ## What's Changed
+
+          $CHANGES
+
+          ## Install / Update
+
+          \`\`\`bash
+          # Fresh install
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+
+          # Install this specific version
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash -s -- --version $TAG
+
+          # Update existing installation
+          ccc update
+          \`\`\`
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          generate_release_notes: true

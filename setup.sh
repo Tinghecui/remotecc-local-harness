@@ -44,7 +44,14 @@ if [ -z "$REMOTE_HOST" ]; then
     exit 1
 fi
 BRIDGE_PORT="${BRIDGE_PORT:-${REMOTE_CC_PORT:-3100}}"
+SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
 VERIFY_ROOTS="${REMOTE_CC_ROOTS:-$(build_default_roots)}"
+SSH_PORT_FLAG=()
+SCP_PORT_FLAG=()
+if [ "$SSH_PORT" != "22" ]; then
+    SSH_PORT_FLAG=(-p "$SSH_PORT")
+    SCP_PORT_FLAG=(-P "$SSH_PORT")
+fi
 
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  Remote CC - One-Click Setup                     ║"
@@ -65,7 +72,7 @@ fi
 echo "  Node.js: $(node -v)"
 
 # 检查 SSH 连接
-if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$REMOTE_HOST" "echo ok" > /dev/null 2>&1; then
+if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "echo ok" > /dev/null 2>&1; then
     echo "  ERROR: Cannot SSH to $REMOTE_HOST"
     echo "  Make sure you have SSH key access. Run: ssh-copy-id $REMOTE_HOST"
     exit 1
@@ -89,15 +96,15 @@ echo ""
 echo "[3/5] Deploying to cloud ($REMOTE_HOST)..."
 
 # 上传文件
-ssh "$REMOTE_HOST" "mkdir -p /tmp/remote-cc-setup"
-scp -q -r "$SCRIPT_DIR/cloud-setup/hooks" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q -r "$SCRIPT_DIR/cloud-setup/claude-config" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q "$SCRIPT_DIR/cloud-setup/prepare-session.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q "$SCRIPT_DIR/cloud-setup/memory-sync.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
+ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "mkdir -p /tmp/remote-cc-setup"
+scp -q "${SCP_PORT_FLAG[@]}" -r "$SCRIPT_DIR/cloud-setup/hooks" "$REMOTE_HOST:/tmp/remote-cc-setup/"
+scp -q "${SCP_PORT_FLAG[@]}" -r "$SCRIPT_DIR/cloud-setup/claude-config" "$REMOTE_HOST:/tmp/remote-cc-setup/"
+scp -q "${SCP_PORT_FLAG[@]}" "$SCRIPT_DIR/cloud-setup/prepare-session.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
+scp -q "${SCP_PORT_FLAG[@]}" "$SCRIPT_DIR/cloud-setup/memory-sync.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
 echo "  Files uploaded"
 
 # 安装 Claude Code
-ssh "$REMOTE_HOST" bash << 'REMOTE_INSTALL'
+ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" bash << 'REMOTE_INSTALL'
 set -e
 apt-get update -qq 2>/dev/null
 apt-get install -y -qq curl git jq 2>/dev/null
@@ -117,7 +124,7 @@ claude plugins install document-skills@anthropic-agent-skills 2>/dev/null && \
 REMOTE_INSTALL
 
 # 配置 Hook + MCP
-ssh "$REMOTE_HOST" bash << REMOTE_CONFIG
+ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" bash << REMOTE_CONFIG
 set -e
 export PATH="\$HOME/.local/bin:\$PATH"
 
@@ -159,7 +166,7 @@ BRIDGE_PID=$!
 sleep 3
 
 # 通过 SSH 隧道验证连通性
-HEALTH=$(ssh -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
+HEALTH=$(ssh "${SSH_PORT_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
   "curl -s http://127.0.0.1:$BRIDGE_PORT/health 2>/dev/null" || echo "FAILED")
 
 kill $BRIDGE_PID 2>/dev/null
@@ -181,15 +188,15 @@ echo "╔═══════════════════════�
 echo "║  Setup Complete!                                 ║"
 echo "╠══════════════════════════════════════════════════╣"
 echo "║                                                  ║"
-echo "║  Step 1: Start the bridge (keep running)         ║"
+echo "║  If you ran 'ccc setup', just type:              ║"
 echo "║                                                  ║"
+echo "║    ccc              Start remote session          ║"
+echo "║    ccc -d           Skip permissions mode         ║"
+echo "║    ccc status       Check status                  ║"
+echo "║                                                  ║"
+echo "║  Or use scripts directly:                        ║"
 echo "║    ./scripts/start-bridge.sh                     ║"
-echo "║                                                  ║"
-echo "║  Step 2: Connect to cloud Claude Code            ║"
-echo "║                                                  ║"
 echo "║    ./scripts/connect.sh ${REMOTE_HOST}$(printf '%*s' $((21 - ${#REMOTE_HOST})) '')║"
-echo "║                                                  ║"
-echo "║  Open multiple terminals for parallel sessions.  ║"
 echo "║                                                  ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""

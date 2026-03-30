@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: local-bridge/package-lock.json
+
+      - name: Install dependencies
+        working-directory: local-bridge
+        run: npm ci
+
+      - name: Build
+        working-directory: local-bridge
+        run: npm run build
+
+      - name: Test
+        working-directory: local-bridge
+        run: npm test
+
+  lint-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell scripts syntax
+        run: |
+          for f in scripts/*.sh setup.sh install.sh; do
+            echo "Checking $f..."
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: .
+          additional_files: setup.sh install.sh
+        env:
+          SHELLCHECK_OPTS: -e SC2086 -e SC2046 -e SC2034
+
+  install-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Test install script (local clone)
+        run: |
+          # Simulate install from existing clone
+          export REMOTE_CC_HOME="$HOME/.remote-cc-test"
+          cp -r . "$REMOTE_CC_HOME"
+          cd "$REMOTE_CC_HOME/local-bridge"
+          npm install --silent
+          chmod +x "$REMOTE_CC_HOME/scripts/"*.sh "$REMOTE_CC_HOME/setup.sh" "$REMOTE_CC_HOME/install.sh"
+
+          # Verify ccc help works
+          "$REMOTE_CC_HOME/scripts/ccc.sh" help
+
+          # Cleanup
+          rm -rf "$REMOTE_CC_HOME"
+
+      - name: Test bridge builds
+        working-directory: local-bridge
+        run: |
+          npm install --silent
+          npm run build

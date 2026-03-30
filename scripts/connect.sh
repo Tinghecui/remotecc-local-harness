@@ -13,11 +13,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../.remote-cc.env"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
 
-CLOUD_HOST="${1:-${REMOTE_CC_HOST:-}}"
-BRIDGE_PORT="${2:-${REMOTE_CC_PORT:-3100}}"
-LOCAL_WORKDIR="${3:-$(pwd)}"
+# ── 参数解析：positional 参数 + Claude 透传参数 ──
+POSITIONAL_ARGS=()
+CLAUDE_EXTRA_ARGS=()
+
+for _arg in "$@"; do
+    case "$_arg" in
+        --dangerously-skip-permissions|--verbose|--debug)
+            CLAUDE_EXTRA_ARGS+=("$_arg")
+            ;;
+        --*)
+            # 其他 -- 参数也透传给 claude
+            CLAUDE_EXTRA_ARGS+=("$_arg")
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$_arg")
+            ;;
+    esac
+done
+
+CLOUD_HOST="${POSITIONAL_ARGS[0]:-${REMOTE_CC_HOST:-}}"
+BRIDGE_PORT="${POSITIONAL_ARGS[1]:-${REMOTE_CC_PORT:-3100}}"
+LOCAL_WORKDIR="${POSITIONAL_ARGS[2]:-$(pwd)}"
 REMOTE_PORT_START="${REMOTE_CC_REMOTE_PORT_START:-43000}"
 REMOTE_PORT_END="${REMOTE_CC_REMOTE_PORT_END:-48999}"
+SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
 
 if [ -z "$CLOUD_HOST" ]; then
     echo "Error: SSH host not specified."
@@ -65,7 +85,7 @@ allocate_remote_port() {
             *":$port:"*) continue ;;
         esac
 
-        ssh -o ConnectTimeout=5 "$CLOUD_HOST" "
+        ssh -o ConnectTimeout=5 -p "$SSH_PORT" "$CLOUD_HOST" "
             PORT='$port'
             if (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print \$4}' | grep -Eq '(^|[.:])'\$PORT'$'; then
                 exit 0
@@ -103,7 +123,7 @@ upload_file_if_exists() {
 
     if [ -f "$src" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp -q "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        scp -q -P "$SSH_PORT" "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
     fi
 }
 
@@ -114,7 +134,7 @@ upload_dir_if_exists() {
 
     if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp -q -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        scp -q -P "$SSH_PORT" -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
     fi
 }
 
@@ -250,7 +270,7 @@ echo "Connecting... (Ctrl+D or /exit to quit)"
 echo ""
 
 # 准备云端会话暂存目录
-ssh "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR'" || exit 1
+ssh -p "$SSH_PORT" "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR'" || exit 1
 
 # 上传本地 CLAUDE.md 文件（用户级 + 项目级）
 upload_file_if_exists "$HOME/.claude/CLAUDE.md" "local-claude-user.md" "Uploading user-level CLAUDE.md..."
@@ -268,7 +288,7 @@ upload_dir_if_exists "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
-    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh "$CLOUD_HOST" "cat > '$(remote_stage_path "local-sse-mcps.json")'"
+    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh -p "$SSH_PORT" "$CLOUD_HOST" "cat > '$(remote_stage_path "local-sse-mcps.json")'"
     echo "  Project MCP list: uploaded"
 fi
 
@@ -279,10 +299,19 @@ fi
 MAX_RETRIES=5
 RETRY_DELAY=3
 
-REMOTE_CMD="export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$REMOTE_BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && export REMOTE_CC_SESSION_ID='$SESSION_ID' && export REMOTE_CC_SESSION_TMP='$REMOTE_SESSION_DIR' && export REMOTE_CC_WORKSPACE_NAME='$WORKSPACE_NAME' && /opt/remote-cc/prepare-session.sh && cd \"\$HOME/workspace/$WORKSPACE_NAME\" && claude"
+# 构建 Claude 启动命令（含透传参数）
+CLAUDE_CMD="claude"
+if [ ${#CLAUDE_EXTRA_ARGS[@]} -gt 0 ]; then
+    for _carg in "${CLAUDE_EXTRA_ARGS[@]}"; do
+        CLAUDE_CMD="$CLAUDE_CMD $_carg"
+    done
+fi
+
+REMOTE_CMD="export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$REMOTE_BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && export REMOTE_CC_SESSION_ID='$SESSION_ID' && export REMOTE_CC_SESSION_TMP='$REMOTE_SESSION_DIR' && export REMOTE_CC_WORKSPACE_NAME='$WORKSPACE_NAME' && /opt/remote-cc/prepare-session.sh && cd \"\$HOME/workspace/$WORKSPACE_NAME\" && $CLAUDE_CMD"
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \
+        -p "$SSH_PORT" \
         -o ServerAliveInterval=30 \
         -o ServerAliveCountMax=3 \
         -o ExitOnForwardFailure=yes \
