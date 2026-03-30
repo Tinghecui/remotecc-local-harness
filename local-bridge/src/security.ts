@@ -1,26 +1,32 @@
-import { resolve, normalize } from "path";
+import { isAbsolute, relative, resolve } from "path";
 import type { BridgeConfig } from "./config.js";
 
-export function assertSafePath(filePath: string, config: BridgeConfig): string {
-  const resolved = resolve(filePath);
-  const normalized = normalize(resolved);
+export function resolvePath(filePath: string): string {
+  return resolve(filePath);
+}
 
-  // 防止路径穿越
-  if (normalized !== resolved) {
-    throw new Error(`Path traversal detected: ${filePath}`);
+export function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const root = resolvePath(rootPath);
+  const candidate = resolvePath(candidatePath);
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+export function assertSafePath(filePath: string, config: BridgeConfig): string {
+  if (!isAbsolute(filePath)) {
+    throw new Error(`Path must be absolute: ${filePath}`);
   }
 
-  const isAllowed = config.allowedRoots.some((root) =>
-    normalized.startsWith(root + "/") || normalized === root
-  );
+  const resolved = resolvePath(filePath);
+  const isAllowed = config.allowedRoots.some((root) => isPathInside(root, resolved));
 
   if (!isAllowed) {
     throw new Error(
-      `Path outside allowed roots: ${normalized}\nAllowed: ${config.allowedRoots.join(", ")}`
+      `Path outside allowed roots: ${resolved}\nAllowed: ${config.allowedRoots.join(", ")}`
     );
   }
 
-  return normalized;
+  return resolved;
 }
 
 export function assertSafeCommand(command: string, config: BridgeConfig): void {

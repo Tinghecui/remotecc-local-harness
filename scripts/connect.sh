@@ -33,7 +33,7 @@ echo "  Local:   $LOCAL_WORKDIR"
 echo ""
 
 # 检查本地 Bridge 是否在运行
-if ! curl -s "http://localhost:$BRIDGE_PORT/health" > /dev/null 2>&1; then
+if ! curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
     echo "WARNING: Local MCP Bridge is not running on port $BRIDGE_PORT"
     echo "  Start it first:  ./scripts/start-bridge.sh"
     echo ""
@@ -46,6 +46,8 @@ fi
 
 echo "Connecting... (Ctrl+D or /exit to quit)"
 echo ""
+
+LOCAL_WORKDIR_B64=$(printf '%s' "$LOCAL_WORKDIR" | base64 | tr -d '\n')
 
 # ============================================================
 # 检测本地 SSE 类型 MCP 服务器，自动添加隧道
@@ -148,4 +150,4 @@ ssh -t \
     -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" \
     $SSE_MCP_TUNNELS \
     "$CLOUD_HOST" \
-    "export PATH=\$HOME/.local/bin:\$PATH && export REMOTE_CC_LOCAL_DIR='$LOCAL_WORKDIR' && /opt/remote-cc/prepare-session.sh && cd ~/workspace && claude"
+    "export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && /opt/remote-cc/prepare-session.sh && cd ~/workspace && claude"

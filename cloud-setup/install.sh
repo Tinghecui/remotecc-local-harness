@@ -5,12 +5,12 @@ set -e
 # Remote CC - 云端一键安装脚本
 # 用法: ./install.sh <SSH_USER@HOST> [MCP_SSE_URL]
 # 示例: ./install.sh root@99.173.22.106
-#       ./install.sh root@99.173.22.106 http://localhost:3100/sse
+#       ./install.sh root@99.173.22.106 http://127.0.0.1:3100/sse
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_HOST="${1:?Usage: ./install.sh <SSH_USER@HOST> [MCP_SSE_URL]}"
-MCP_SSE_URL="${2:-http://localhost:3100/sse}"
+MCP_SSE_URL="${2:-http://127.0.0.1:3100/sse}"
 
 echo "========================================="
 echo "  Remote CC - Cloud Deploy"

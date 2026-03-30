@@ -11,7 +11,7 @@ CLOUD_MEMORY_PATH="$2"
 BRIDGE_PORT="${3:-3100}"
 SYNC_INTERVAL="${4:-30}"
 
-BRIDGE_URL="http://localhost:$BRIDGE_PORT"
+BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 
 if [ -z "$LOCAL_MEMORY_PATH" ] || [ -z "$CLOUD_MEMORY_PATH" ]; then
     echo "memory-sync: ERROR - missing paths, exiting"

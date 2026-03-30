@@ -19,5 +19,6 @@ ALWAYS use the `local__*` MCP tools. Built-in tools are disabled.
 ## Important Notes
 
 - All file paths are absolute paths on the LOCAL machine
-- The `local__bash` tool executes commands on the LOCAL machine's shell
+- The `local__bash` tool executes commands on the LOCAL machine's shell with the user's normal permissions
+- Prefer `cd <repo> && <command>` so commands stay anchored in the project you are editing
 - Do NOT attempt to use built-in Read/Edit/Write/Bash/Glob/Grep - they are blocked

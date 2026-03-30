@@ -7,7 +7,7 @@ import fg from "fast-glob";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import type { BridgeConfig } from "./config.js";
-import { assertSafePath, assertSafeCommand, log } from "./security.js";
+import { assertSafePath, assertSafeCommand, isPathInside, log } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -107,7 +107,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
   // ==================== bash ====================
   server.tool(
     "bash",
-    "Execute a bash command on the local machine. Returns stdout, stderr, and exit code.",
+    "Execute a bash command on the local machine. Starts in the provided working directory and uses the local user's normal permissions.",
     {
       command: z.string().describe("The bash command to execute"),
       cwd: z
@@ -209,7 +209,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
 
       // 验证所有结果都在允许范围内
       const safeFiles = files.filter((f) =>
-        config.allowedRoots.some((root) => f.startsWith(root))
+        config.allowedRoots.some((root) => isPathInside(root, f))
       );
 
       return {

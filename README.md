@@ -1,120 +1,131 @@
 # Remote CC
 
-在云端 VPS 运行 Claude Code，所有文件操作和命令在你本地机器上执行，通过 SSH 反向隧道连接。
+在云端 VPS 运行 Claude Code，但把文件读写和命令执行留在你本地机器上，通过 SSH 反向隧道把两边接起来。
 
-## 为什么？
+> 状态：`alpha`。已经适合自用和分享给熟悉 Claude Code 的开发者，但仍建议把它当作“可信环境里的本地自动化桥”来使用。
 
-- Claude Code 对网络、CPU、内存要求高，本地跑容易卡
-- 云端 VPS 便宜且性能好，但文件在本地
-- Remote CC 让云端 Claude Code 透明地操作你的本地文件
+## 它解决什么问题
 
-## 架构
+- Claude Code 很吃网络、CPU、内存，本地跑会卡。
+- 便宜的 VPS 跑 Claude Code 很轻松，但你的源码和工作环境还在本地。
+- Remote CC 让 Claude 跑在云端，同时透明地操作你本地的项目目录。
 
+## 工作方式
+
+```text
+你的 Mac / Linux（本地）                  云端 VPS
+┌────────────────────┐                 ┌──────────────────┐
+│ Terminal 1         │                 │                  │
+│ local-bridge :3100 │◄── SSH -R ─────│ Claude Code      │
+│  ├ read_file       │                 │  内置工具被 Hook  │
+│  ├ edit_file       │                 │  拦截后改走 MCP    │
+│  ├ write_file      │                 │                  │
+│  ├ bash            │                 │                  │
+│  ├ glob            │                 │                  │
+│  └ grep            │                 │                  │
+│                    │                 │                  │
+│ Terminal 2         │                 │                  │
+│ connect.sh         │────────────────▶│ claude           │
+└────────────────────┘                 └──────────────────┘
 ```
-你的 Mac (本地)                          云端 VPS
-┌──────────────────┐                ┌──────────────────┐
-│ Terminal 1       │                │                  │
-│ MCP Bridge :3100 │◄── SSH 隧道 ───│ Claude Code      │
-│  ├ read_file     │                │  内置 tool 被    │
-│  ├ edit_file     │                │  Hook 拦截       │
-│  ├ write_file    │                │  ↓               │
-│  ├ bash          │                │  改用 MCP tool   │
-│  ├ glob          │                │  ↓               │
-│  └ grep          │                │  请求发到 Bridge  │
-│                  │                │                  │
-│ Terminal 2       │    SSH -R      │                  │
-│ connect.sh ─────────────────────→│ claude           │
-└──────────────────┘                └──────────────────┘
-```
 
-1. 本地运行 MCP Bridge，提供 6 个文件/命令工具
-2. SSH 反向隧道让云端 `localhost:3100` 指向你本地的 Bridge
-3. 云端 Claude Code 的内置工具被 Hook 拦截，强制使用 MCP 工具
-4. MCP 请求通过隧道回到本地执行，结果原路返回
+链路分成 4 步：
+
+1. 本地启动 `local-bridge`，提供 6 个 MCP 工具。
+2. `connect.sh` 建立 SSH 反向隧道，把云端 `127.0.0.1:<port>` 接回本地 bridge。
+3. 云端 Claude Code 的内置 Read/Edit/Write/Bash/Glob/Grep 被 hook 拦截。
+4. Claude 改走 `local__*` MCP 工具，请求通过隧道回到你本地执行。
 
 ## 快速开始
 
 ### 前置条件
 
-- 本地：macOS/Linux，Node.js 20+
-- 云端：Ubuntu 22/24 VPS，1G+ 内存
-- SSH 免密登录：`ssh-copy-id root@<VPS_IP>`
+- 本地：macOS 或 Linux，Node.js 20+
+- 云端：Ubuntu 22/24
+- 已配置 SSH 免密登录：`ssh-copy-id root@<VPS_IP>`
 
 ### 1. 配置
 
 ```bash
 git clone <repo-url> remote-cc
 cd remote-cc
-
-# 创建配置文件
 cp .remote-cc.env.example .remote-cc.env
-# 编辑 .remote-cc.env，填入你的 VPS 地址
 ```
 
-`.remote-cc.env` 示例：
+示例：
+
 ```bash
 REMOTE_CC_HOST=root@your-vps-ip
 REMOTE_CC_PORT=3100
 REMOTE_CC_ROOTS=~/projects,~/Desktop
+MCP_HOST=127.0.0.1
 ```
 
-所有脚本都会自动读取这个文件，配置一次即可。也可以通过命令行参数覆盖。
-
-### 2. 一键部署
+### 2. 一键部署到云端
 
 ```bash
-# 使用配置文件中的 REMOTE_CC_HOST
 ./setup.sh
 
-# 或直接指定
+# 或者直接指定
 ./setup.sh root@<VPS_IP>
 ```
+
+`setup.sh` 会完成：
+
+- 本地 `local-bridge` 依赖安装
+- 云端 Claude Code 安装
+- hook / MCP / `prepare-session.sh` / `memory-sync.sh` 配置
+- 一次本地到云端的链路验证
 
 ### 3. 日常使用
 
 ```bash
-# 终端 1：启动本地 Bridge（保持运行）
+# 终端 1：启动本地 bridge
 ./scripts/start-bridge.sh
 
-# 终端 2：连接云端（在你要操作的项目目录下执行）
+# 终端 2：进入你要工作的项目目录，再连接云端
 cd ~/my-project
 ./scripts/connect.sh
 ```
 
-多开终端重复步骤 2 即可并行多个 Claude Code 会话，共享同一个 Bridge。
+如果你想并行多个 Claude 会话，重复第 2 步即可。
 
 ## 项目结构
 
-```
+```text
 remote-cc/
 ├── local-bridge/            # 本地 MCP Bridge Server (TypeScript)
-│   └── src/
-│       ├── index.ts         # HTTP + SSE 入口
-│       ├── server.ts        # MCP 工具定义（6 个工具）
-│       ├── security.ts      # 路径白名单 + 命令黑名单
-│       └── config.ts        # 环境变量配置
+│   ├── src/
+│   │   ├── index.ts         # HTTP + SSE 入口
+│   │   ├── server.ts        # MCP 工具定义（6 个工具）
+│   │   ├── security.ts      # 路径边界判断 + 命令黑名单
+│   │   └── config.ts        # 环境变量配置
+│   └── test/
+│       └── security.test.ts # 最小安全回归测试
 ├── cloud-setup/             # 云端部署文件
 │   ├── install.sh           # 云端安装脚本
-│   ├── prepare-session.sh   # 每次连接时动态生成配置
+│   ├── prepare-session.sh   # 每次连接时动态准备云端会话
+│   ├── memory-sync.sh       # Claude memory 同步守护进程
 │   ├── hooks/
-│   │   └── block-builtin.sh # PreToolUse Hook：拦截内置工具
+│   │   └── block-builtin.sh # 拦截内置工具
 │   └── claude-config/
 │       ├── settings.json    # Hook 配置
 │       └── CLAUDE.md        # 引导 Claude 使用 MCP 工具
-├── scripts/                 # 便捷脚本
-│   ├── start-bridge.sh      # 启动本地 Bridge
-│   ├── connect.sh           # SSH 连接云端 + 启动 claude
-│   └── status.sh            # 检查各组件状态
-└── setup.sh                 # 一键部署入口
+├── scripts/
+│   ├── start-bridge.sh      # 启动本地 bridge
+│   ├── connect.sh           # 建立反向隧道并启动云端 claude
+│   └── status.sh            # 本地 / 云端状态检查
+└── setup.sh                 # 主入口：一键部署
 ```
 
-## 配置
+## 配置项
 
-### 环境变量（本地 Bridge）
+### 本地 bridge 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MCP_ALLOWED_ROOTS` | `~/projects` | 允许访问的目录（逗号分隔） |
+| `MCP_HOST` | `127.0.0.1` | 监听地址，默认只绑定回环地址 |
+| `MCP_ALLOWED_ROOTS` | `~/Desktop, ~/projects, ~/Documents` 中存在的目录 | 文件类工具允许访问的目录 |
 | `MCP_PORT` | `3100` | Bridge 监听端口 |
 | `MCP_CMD_TIMEOUT` | `120000` | 命令超时（毫秒） |
 | `MCP_LOG` | `true` | 设为 `false` 关闭请求日志 |
@@ -122,7 +133,6 @@ remote-cc/
 ### 自定义允许目录
 
 ```bash
-# 启动时指定
 ./scripts/start-bridge.sh ~/projects,~/work,~/Documents
 
 # 或通过环境变量
@@ -136,42 +146,59 @@ MCP_PORT=4100 ./scripts/start-bridge.sh
 ./scripts/connect.sh root@<VPS_IP> 4100
 ```
 
-## 连接时自动同步
+## 连接时会同步什么
 
-每次 `connect.sh` 连接时，自动将以下本地配置上传到云端：
+每次运行 `connect.sh` 时，会自动把下面这些本地配置带到云端：
 
 | 本地文件 | 说明 |
 |---------|------|
 | `~/.claude/CLAUDE.md` | 用户级指令 |
 | `项目/CLAUDE.md` | 项目级指令 |
-| `~/.claude/settings.json` | 用户偏好（合并，保留云端 hooks） |
-| `~/.claude/skills/` | 个人 skills |
-| `~/.claude/commands/` | 自定义命令 |
+| `~/.claude/settings.json` | 用户偏好，合并时保留云端 hooks |
+| `~/.claude/settings.local.json` | 权限设置，按 allow/deny 并集合并 |
+| `~/.claude/skills/` | 用户级 skills |
+| `~/.claude/commands/` | 用户级 commands |
+| `项目/.claude/skills/` | 项目级 skills |
 
-## 安全
+## 安全模型
 
-- MCP Bridge **只监听 localhost**，不暴露到公网
-- 所有流量通过 **SSH 加密隧道**传输
-- Bridge 有**路径白名单**，只能访问指定目录
-- Bridge 有**命令黑名单**，拦截危险命令
+- bridge 默认只绑定 `127.0.0.1`，不直接暴露到公网。
+- 所有流量通过 SSH 反向隧道传输，云端只访问到回环地址上的 MCP 服务。
+- `read_file`、`edit_file`、`write_file`、`glob`、`grep` 这些文件类工具会强制限制在 `MCP_ALLOWED_ROOTS` 之内。
+- `bash` 会从允许目录里的工作目录启动，但它不是容器或沙箱，仍然以你本地用户权限执行 shell 命令。
+- 所以更准确的使用假设是：你信任这次 Claude 会话，也信任连接到的 VPS。
+
+## 已知限制
+
+- 文件类工具要求绝对路径。
+- `bash` 只有黑名单保护，不会对所有危险命令做完备拦截。
+- 当前主要验证过的组合是：本地 macOS/Linux + 云端 Ubuntu 22/24。
+
+## 开发验证
+
+```bash
+cd local-bridge
+npm install
+npm run check
+```
 
 ## 故障排查
 
 ```bash
-# 检查各组件状态
+# 查看整体状态
 ./scripts/status.sh <VPS_IP>
 
-# Bridge 端口被占用
-lsof -ti:3100 | xargs kill -9
+# 查看本地 bridge 是否已经监听
+lsof -nP -iTCP:3100 -sTCP:LISTEN
 
-# 确认 Bridge 正常
-curl http://localhost:3100/health
+# 本地健康检查
+curl http://127.0.0.1:3100/health
 
-# 确认隧道通畅（在 VPS 上执行）
-curl http://localhost:3100/health
+# 云端通过反向隧道访问 bridge（在 VPS 上执行）
+curl http://127.0.0.1:3100/health
 
 # 重启会话
-# 在 claude 里输入 /exit，然后重新 connect.sh
+# 在 claude 里输入 /exit，然后重新 ./scripts/connect.sh
 ```
 
 ## License

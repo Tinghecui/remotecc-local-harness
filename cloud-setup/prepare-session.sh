@@ -257,6 +257,7 @@ This is the user's real working directory on their local Mac. When referencing f
 - **All file paths are on the LOCAL machine** at \`$LOCAL_DIR\`
 - When the user says "this directory" or "here", they mean \`$LOCAL_DIR\`
 - When running shell commands via \`local__bash\`, they execute on the local Mac
+- \`local__bash\` uses the local user's normal permissions; treat it like trusted local shell access
 - Use \`local__bash\` with \`cd $LOCAL_DIR && ...\` to run commands in the project directory
 - When showing file paths to the user, show the local path (e.g. \`$LOCAL_DIR/src/foo.ts\`)
 - Do NOT reference \`~/workspace\` or any cloud paths — the user only cares about their local files
@@ -268,14 +269,14 @@ CLAUDEMD
 # ============================================================
 
 # 停掉上次残留的同步进程
-pkill -f "memory-sync.sh" 2>/dev/null || true
+pkill -f "/opt/remote-cc/memory-sync.sh" 2>/dev/null || true
 
 if [ "$LOCAL_DIR" != "unknown" ] && [ -f /opt/remote-cc/memory-sync.sh ]; then
     BRIDGE_PORT="${BRIDGE_PORT:-3100}"
 
     # 通过 bridge 动态发现本地 memory 路径（处理 CJK 编码等问题）
-    ENCODED_DIR=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$LOCAL_DIR'))" 2>/dev/null || echo "$LOCAL_DIR")
-    LOCAL_MEMORY_PATH=$(curl -s --max-time 5 "http://localhost:${BRIDGE_PORT}/sync/memory-path?workdir=${ENCODED_DIR}" 2>/dev/null | jq -r '.memoryPath // empty' 2>/dev/null)
+    ENCODED_DIR=$(jq -rn --arg v "$LOCAL_DIR" '$v|@uri')
+    LOCAL_MEMORY_PATH=$(curl -s --max-time 5 "http://127.0.0.1:${BRIDGE_PORT}/sync/memory-path?workdir=${ENCODED_DIR}" 2>/dev/null | jq -r '.memoryPath // empty' 2>/dev/null)
 
     CLOUD_MEMORY_PATH="$HOME/.claude/projects/-root-workspace/memory"
 

@@ -1,10 +1,11 @@
 import express from "express";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { readdir, readFile, writeFile, stat, mkdir, utimes } from "fs/promises";
-import { join, resolve } from "path";
+import { join } from "path";
 import { homedir } from "os";
 import { loadConfig } from "./config.js";
 import { createMcpServer } from "./server.js";
+import { isPathInside, resolvePath } from "./security.js";
 
 const config = loadConfig();
 
@@ -26,6 +27,7 @@ app.post("/register", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
+    host: config.host,
     allowedRoots: config.allowedRoots,
     uptime: process.uptime(),
   });
@@ -38,7 +40,7 @@ app.get("/health", (_req, res) => {
 const CLAUDE_DIR = join(homedir(), ".claude");
 
 function isUnderClaudeDir(p: string): boolean {
-  return resolve(p).startsWith(CLAUDE_DIR);
+  return isPathInside(CLAUDE_DIR, p);
 }
 
 // GET /sync/memory — 返回内存文件列表+内容+mtime
@@ -50,7 +52,7 @@ app.get("/sync/memory", async (req, res) => {
   }
 
   try {
-    const resolved = resolve(memoryPath);
+    const resolved = resolvePath(memoryPath);
     try {
       await stat(resolved);
     } catch {
@@ -85,7 +87,7 @@ app.post("/sync/memory", async (req, res) => {
   }
 
   try {
-    const resolved = resolve(memoryPath);
+    const resolved = resolvePath(memoryPath);
     await mkdir(resolved, { recursive: true });
 
     const { files } = req.body as {
@@ -100,7 +102,7 @@ app.post("/sync/memory", async (req, res) => {
     let written = 0;
     for (const file of files) {
       const filePath = join(resolved, file.name);
-      if (!resolve(filePath).startsWith(resolved)) continue; // 防目录遍历
+      if (!isPathInside(resolved, filePath)) continue; // 防目录遍历
       await writeFile(filePath, file.content);
       if (file.mtime) {
         const mtime = new Date(file.mtime);
@@ -178,18 +180,19 @@ app.post("/messages", async (req, res) => {
   await transport.handlePostMessage(req, res, req.body);
 });
 
-app.listen(config.port, () => {
+app.listen(config.port, config.host, () => {
+  const listenAddress = `${config.host}:${config.port}`;
   console.log(`
 ╔══════════════════════════════════════════════════╗
 ║  Remote CC - Local MCP Bridge (SSE)              ║
 ╠══════════════════════════════════════════════════╣
-║  Port:    ${String(config.port).padEnd(38)}║
+║  Listen:  ${listenAddress.padEnd(38)}║
 ║  Roots:                                          ║
 ${config.allowedRoots.map((r) => `║    ${r.padEnd(44)}║`).join("\n")}
 ╠══════════════════════════════════════════════════╣
 ║  SSE endpoint:  /sse                             ║
 ║  Msg endpoint:  /messages                        ║
-║  Security: SSH tunnel (no auth layer)            ║
+║  Security: loopback only + SSH tunnel            ║
 ║  Waiting for connections...                      ║
 ╚══════════════════════════════════════════════════╝
 `);

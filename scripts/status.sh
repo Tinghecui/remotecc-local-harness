@@ -14,8 +14,8 @@ echo ""
 # 检查本地 MCP Bridge
 echo "[Local MCP Bridge]"
 BRIDGE_PORT="${REMOTE_CC_PORT:-${MCP_PORT:-3100}}"
-if curl -s "http://localhost:$BRIDGE_PORT/health" > /dev/null 2>&1; then
-    HEALTH=$(curl -s "http://localhost:$BRIDGE_PORT/health")
+if curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
+    HEALTH=$(curl -s "http://127.0.0.1:$BRIDGE_PORT/health")
     echo "  Status: RUNNING"
     echo "  Info:   $HEALTH"
 else
@@ -32,34 +32,16 @@ if [ -z "$CLOUD_HOST" ]; then
     echo "   or: set REMOTE_CC_HOST in .remote-cc.env"
     exit 1
 fi
-# 从 user@host 中提取 host 部分用于 SSH
-CLOUD_HOST_CLEAN="$CLOUD_HOST"
 echo "[Cloud Server: $CLOUD_HOST]"
 if ssh -o ConnectTimeout=3 -o BatchMode=yes "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
     echo "  SSH:    OK"
-    CLAUDE_OK=$(ssh -o ConnectTimeout=3 "$CLOUD_HOST" "command -v claude" 2>/dev/null)
-    if [ -n "$CLAUDE_OK" ]; then
-        echo "  Claude: INSTALLED"
+    CLAUDE_VERSION=$(ssh -o ConnectTimeout=3 "$CLOUD_HOST" "export PATH=\$HOME/.local/bin:\$PATH && claude --version" 2>/dev/null)
+    if [ -n "$CLAUDE_VERSION" ]; then
+        echo "  Claude: $CLAUDE_VERSION"
     else
         echo "  Claude: NOT INSTALLED"
     fi
 else
     echo "  SSH:    UNREACHABLE"
-fi
-echo ""
-
-# 检查 Tailscale
-echo "[Tailscale]"
-if command -v tailscale &> /dev/null; then
-    TS_STATUS=$(tailscale status --json 2>/dev/null | head -1)
-    if [ -n "$TS_STATUS" ]; then
-        echo "  Status: CONNECTED"
-        tailscale status 2>/dev/null | head -5
-    else
-        echo "  Status: INSTALLED but not connected"
-        echo "  Run:    tailscale up"
-    fi
-else
-    echo "  Status: NOT INSTALLED"
 fi
 echo ""
