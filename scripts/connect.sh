@@ -32,6 +32,42 @@ echo "  Tunnel:  localhost:$BRIDGE_PORT → remote:$BRIDGE_PORT"
 echo "  Local:   $LOCAL_WORKDIR"
 echo ""
 
+# 检查是否已有相同目标/端口的旧 SSH 隧道在运行
+if [ "${REMOTE_CC_SKIP_EXISTING_CHECK:-0}" != "1" ]; then
+    EXISTING_TUNNELS=$(ps -axo pid=,ppid=,command= | awk -v host="$CLOUD_HOST" -v port="$BRIDGE_PORT" '
+        index($0, "ssh ") && index($0, host) && index($0, "-R " port ":localhost:" port) {
+            pid = $1
+            ppid = $2
+            $1 = ""
+            $2 = ""
+            sub(/^ +/, "", $0)
+            print pid "\t" ppid "\t" $0
+        }
+    ')
+
+    if [ -n "$EXISTING_TUNNELS" ]; then
+        echo "ERROR: Existing Remote CC tunnel detected for $CLOUD_HOST on port $BRIDGE_PORT."
+        echo "This usually means a previous ./scripts/connect.sh session is still running."
+        echo ""
+        echo "$EXISTING_TUNNELS" | while IFS=$'\t' read -r pid ppid cmd; do
+            parent_cmd=$(ps -p "$ppid" -o command= 2>/dev/null | sed 's/^ *//')
+            echo "  SSH PID $pid (parent $ppid): $cmd"
+            if [ -n "$parent_cmd" ]; then
+                echo "    Parent: $parent_cmd"
+            fi
+        done
+        echo ""
+        echo "Close the old Claude session (type /exit) or stop the older ./scripts/connect.sh process first."
+        echo "If you need to inspect it, run:"
+        echo "  ps -fp <PID>"
+        echo "If you need to terminate it, run:"
+        echo "  kill <PID>"
+        echo ""
+        echo "Set REMOTE_CC_SKIP_EXISTING_CHECK=1 to bypass this preflight."
+        exit 1
+    fi
+fi
+
 # 检查本地 Bridge 是否在运行
 if ! curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
     echo "WARNING: Local MCP Bridge is not running on port $BRIDGE_PORT"

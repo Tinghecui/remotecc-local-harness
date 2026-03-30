@@ -107,6 +107,13 @@ if ! command -v claude &> /dev/null && ! test -f ~/.local/bin/claude; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 fi
 echo "  Claude Code: $(~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null)"
+
+# 安装插件
+export PATH="$HOME/.local/bin:$PATH"
+claude plugins marketplace add https://github.com/anthropics/skills.git 2>/dev/null || true
+claude plugins install document-skills@anthropic-agent-skills 2>/dev/null && \
+    echo "  Plugin: document-skills installed" || \
+    echo "  Plugin: document-skills install skipped (may need manual install)"
 REMOTE_INSTALL
 
 # 配置 Hook + MCP

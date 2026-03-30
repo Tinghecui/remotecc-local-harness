@@ -32,6 +32,12 @@ if [ -z "$CLOUD_HOST" ]; then
     echo "   or: set REMOTE_CC_HOST in .remote-cc.env"
     exit 1
 fi
+
+# README 中常用 bare IP；默认补成 root@HOST
+if [[ "$CLOUD_HOST" != *@* ]]; then
+    CLOUD_HOST="root@$CLOUD_HOST"
+fi
+
 echo "[Cloud Server: $CLOUD_HOST]"
 if ssh -o ConnectTimeout=3 -o BatchMode=yes "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
     echo "  SSH:    OK"
