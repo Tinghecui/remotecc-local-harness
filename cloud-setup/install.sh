@@ -10,13 +10,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_HOST="${1:?Usage: ./install.sh <SSH_USER@HOST> [MCP_SSE_URL]}"
-MCP_SSE_URL="${2:-http://127.0.0.1:3100/sse}"
 
 echo "========================================="
 echo "  Remote CC - Cloud Deploy"
 echo "========================================="
 echo "  Target:   $REMOTE_HOST"
-echo "  MCP URL:  $MCP_SSE_URL"
+echo "  MCP URL:  session-managed"
 echo ""
 
 # ---- 上传文件 ----
@@ -66,10 +65,9 @@ chmod +x /opt/remote-cc/memory-sync.sh
 mkdir -p ~/.claude
 cp /tmp/remote-cc-setup/claude-config/settings.json ~/.claude/settings.json
 
-# MCP server（用 CLI 添加，SSE 类型，无认证）
+# 移除旧的用户级 MCP 配置，连接时由会话级 .mcp.json 动态生成
 export PATH="\$HOME/.local/bin:\$PATH"
 claude mcp remove local-bridge 2>/dev/null || true
-claude mcp add -t sse -s user -- local-bridge $MCP_SSE_URL 2>&1
 
 # workspace（CLAUDE.md 由 prepare-session.sh 动态生成）
 mkdir -p ~/workspace
@@ -85,8 +83,7 @@ export PATH="$HOME/.local/bin:$PATH"
 echo "  Claude:   $(claude --version)"
 echo "  Hook:     $(test -x /opt/remote-cc/hooks/block-builtin.sh && echo 'OK' || echo 'MISSING')"
 echo "  Settings: $(test -f ~/.claude/settings.json && echo 'OK' || echo 'MISSING')"
-echo "  MCP:"
-claude mcp list 2>&1 | grep -E "local-bridge|Status" || true
+echo "  MCP:      session-managed (.mcp.json)"
 VERIFY_EOF
 
 echo ""
