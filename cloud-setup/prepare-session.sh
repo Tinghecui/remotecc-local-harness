@@ -11,6 +11,7 @@
 #   local-skills-user/              → ~/.claude/skills/
 #   local-commands-user/            → ~/.claude/commands/
 #   local-skills-project/           → ~/workspace/<session>/.claude/skills/
+#   local-commands-project/         → ~/workspace/<session>/.claude/commands/
 #   local-sse-mcps.json             → ~/workspace/<session>/.mcp.json
 #
 # 环境变量:
@@ -44,6 +45,7 @@ SESSION_COMMANDS_USER="$(session_file "local-commands-user")"
 SESSION_SETTINGS_PROJECT="$(session_file "local-settings-project.json")"
 SESSION_SETTINGS_LOCAL_PROJECT="$(session_file "local-settings-local-project.json")"
 SESSION_SKILLS_PROJECT="$(session_file "local-skills-project")"
+SESSION_COMMANDS_PROJECT="$(session_file "local-commands-project")"
 SESSION_SSE_MCP_LIST="$(session_file "local-sse-mcps.json")"
 SESSION_MEMORY_PID_FILE="$(session_file "memory-sync.pid")"
 SESSION_MEMORY_LOG="$(session_file "memory-sync.log")"
@@ -202,6 +204,14 @@ if [ -d "$SESSION_SKILLS_PROJECT" ]; then
     cp -r "$SESSION_SKILLS_PROJECT"/* "$WORKSPACE/.claude/skills/" 2>/dev/null
     rm -rf "$SESSION_SKILLS_PROJECT"
     echo "  Project skills: synced"
+fi
+
+# 项目级 commands
+if [ -d "$SESSION_COMMANDS_PROJECT" ]; then
+    mkdir -p "$WORKSPACE/.claude/commands"
+    cp -r "$SESSION_COMMANDS_PROJECT"/* "$WORKSPACE/.claude/commands/" 2>/dev/null
+    rm -rf "$SESSION_COMMANDS_PROJECT"
+    echo "  Project commands: synced"
 fi
 
 # ============================================================

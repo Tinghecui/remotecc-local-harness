@@ -285,6 +285,7 @@ upload_dir_if_exists "$HOME/.claude/commands" "local-commands-user" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-project.json" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
+upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" ""
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
