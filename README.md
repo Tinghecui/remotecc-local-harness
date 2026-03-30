@@ -32,7 +32,7 @@
 链路分成 4 步：
 
 1. 本地启动 `local-bridge`，提供 6 个 MCP 工具。
-2. `connect.sh` 建立 SSH 反向隧道，把云端 `127.0.0.1:<port>` 接回本地 bridge。
+2. `connect.sh` 为每个会话单独分配一组云端回环端口，并通过 SSH 反向隧道把它们接回本地 bridge / MCP。
 3. 云端 Claude Code 的内置 Read/Edit/Write/Bash/Glob/Grep 被 hook 拦截。
 4. Claude 改走 `local__*` MCP 工具，请求通过隧道回到你本地执行。
 
@@ -88,7 +88,7 @@ cd ~/my-project
 ./scripts/connect.sh
 ```
 
-如果你想并行多个 Claude 会话，重复第 2 步即可。
+如果你想并行多个 Claude 会话，重复第 2 步即可。`connect.sh` 会自动为每个会话创建独立的云端端口和 `~/workspace/<session>` 工作目录。
 
 ## 项目结构
 
@@ -104,7 +104,7 @@ remote-cc/
 │       └── security.test.ts # 最小安全回归测试
 ├── cloud-setup/             # 云端部署文件
 │   ├── install.sh           # 云端安装脚本
-│   ├── prepare-session.sh   # 每次连接时动态准备云端会话
+│   ├── prepare-session.sh   # 每次连接时动态准备会话级 workspace / .mcp.json
 │   ├── memory-sync.sh       # Claude memory 同步守护进程
 │   ├── hooks/
 │   │   └── block-builtin.sh # 拦截内置工具
@@ -129,6 +129,13 @@ remote-cc/
 | `MCP_PORT` | `3100` | Bridge 监听端口 |
 | `MCP_CMD_TIMEOUT` | `120000` | 命令超时（毫秒） |
 | `MCP_LOG` | `true` | 设为 `false` 关闭请求日志 |
+
+### connect.sh 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `REMOTE_CC_REMOTE_PORT_START` | `43000` | 云端会话专用反向端口的起始范围 |
+| `REMOTE_CC_REMOTE_PORT_END` | `48999` | 云端会话专用反向端口的结束范围 |
 
 ### 自定义允许目录
 

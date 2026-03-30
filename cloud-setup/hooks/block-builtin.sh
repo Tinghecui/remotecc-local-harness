@@ -12,7 +12,7 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 if [ -n "$FILE_PATH" ]; then
     CLAUDE_DIR="$HOME/.claude"
     case "$FILE_PATH" in
-        "$CLAUDE_DIR"/*|"$HOME/workspace/CLAUDE.md")
+        "$CLAUDE_DIR"/*|"$HOME"/workspace/*/CLAUDE.md|"$HOME"/workspace/*/.mcp.json|"$HOME"/workspace/*/.claude/*)
             exit 0
             ;;
     esac

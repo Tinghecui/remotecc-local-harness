@@ -1,34 +1,62 @@
 #!/bin/bash
 # ============================================================
 # 每次 connect.sh 连接时在云端执行
-# 同步本地配置到云端，动态生成 ~/workspace/CLAUDE.md
+# 同步本地配置到云端，动态生成会话级 workspace / CLAUDE.md / .mcp.json
 #
-# 从 /tmp/local-* 读取 connect.sh 上传的文件：
-#   /tmp/local-claude-user.md        → ~/.claude/CLAUDE.md
-#   /tmp/local-claude-project.md     → ~/workspace/CLAUDE.md
-#   /tmp/local-settings-user.json    → merge into ~/.claude/settings.json
-#   /tmp/local-settings-project.json → merge into ~/workspace/.claude/settings.json
-#   /tmp/local-skills-user/          → ~/.claude/skills/
-#   /tmp/local-commands-user/        → ~/.claude/commands/
-#   /tmp/local-skills-project/       → ~/workspace/.claude/skills/
+# 从 REMOTE_CC_SESSION_TMP 读取 connect.sh 上传的文件：
+#   local-claude-user.md            → ~/.claude/CLAUDE.md
+#   local-claude-project.md         → ~/workspace/<session>/CLAUDE.md
+#   local-settings-user.json        → merge into ~/.claude/settings.json
+#   local-settings-project.json     → merge into ~/workspace/<session>/.claude/settings.json
+#   local-skills-user/              → ~/.claude/skills/
+#   local-commands-user/            → ~/.claude/commands/
+#   local-skills-project/           → ~/workspace/<session>/.claude/skills/
+#   local-sse-mcps.json             → ~/workspace/<session>/.mcp.json
 #
-# 环境变量: REMOTE_CC_LOCAL_DIR — 本地工作目录路径
+# 环境变量:
+#   REMOTE_CC_LOCAL_DIR      — 本地工作目录路径
+#   REMOTE_CC_SESSION_ID     — connect.sh 生成的会话 ID
+#   REMOTE_CC_SESSION_TMP    — 本次会话的云端暂存目录
+#   REMOTE_CC_WORKSPACE_NAME — 会话级 workspace 目录名
+#   BRIDGE_PORT              — 本会话反向隧道后的远端 bridge 端口
 # ============================================================
 
 LOCAL_DIR="${REMOTE_CC_LOCAL_DIR:-unknown}"
-WORKSPACE="$HOME/workspace"
+SESSION_ID="${REMOTE_CC_SESSION_ID:-default}"
+SESSION_TMP="${REMOTE_CC_SESSION_TMP:-/tmp/remote-cc-session}"
+WORKSPACE_NAME="${REMOTE_CC_WORKSPACE_NAME:-default}"
+WORKSPACE="$HOME/workspace/$WORKSPACE_NAME"
+BRIDGE_PORT="${BRIDGE_PORT:-3100}"
 
+mkdir -p "$SESSION_TMP"
 mkdir -p "$WORKSPACE"
+
+session_file() {
+    printf '%s/%s' "$SESSION_TMP" "$1"
+}
+
+SESSION_USER_CLAUDE="$(session_file "local-claude-user.md")"
+SESSION_PROJECT_CLAUDE="$(session_file "local-claude-project.md")"
+SESSION_SETTINGS_USER="$(session_file "local-settings-user.json")"
+SESSION_SETTINGS_LOCAL_USER="$(session_file "local-settings-local-user.json")"
+SESSION_SKILLS_USER="$(session_file "local-skills-user")"
+SESSION_COMMANDS_USER="$(session_file "local-commands-user")"
+SESSION_SETTINGS_PROJECT="$(session_file "local-settings-project.json")"
+SESSION_SETTINGS_LOCAL_PROJECT="$(session_file "local-settings-local-project.json")"
+SESSION_SKILLS_PROJECT="$(session_file "local-skills-project")"
+SESSION_SSE_MCP_LIST="$(session_file "local-sse-mcps.json")"
+SESSION_MEMORY_PID_FILE="$(session_file "memory-sync.pid")"
+SESSION_MEMORY_LOG="$(session_file "memory-sync.log")"
 
 # ============================================================
 # 1. CLAUDE.md 同步
 # ============================================================
 
 # 用户级 CLAUDE.md
-if [ -f /tmp/local-claude-user.md ]; then
+if [ -f "$SESSION_USER_CLAUDE" ]; then
     mkdir -p "$HOME/.claude"
-    cp /tmp/local-claude-user.md "$HOME/.claude/CLAUDE.md"
-    rm -f /tmp/local-claude-user.md
+    cp "$SESSION_USER_CLAUDE" "$HOME/.claude/CLAUDE.md"
+    rm -f "$SESSION_USER_CLAUDE"
     echo "  User CLAUDE.md: synced"
 fi
 
@@ -80,7 +108,7 @@ merge_settings() {
     rm -f "$LOCAL_FILE"
 }
 
-merge_settings "/tmp/local-settings-user.json" "$HOME/.claude/settings.json" "User"
+merge_settings "$SESSION_SETTINGS_USER" "$HOME/.claude/settings.json" "User"
 
 # ---- settings.local.json 合并（权限设置，取并集） ----
 
@@ -136,25 +164,25 @@ merge_settings_local() {
     rm -f "$LOCAL_FILE"
 }
 
-merge_settings_local "/tmp/local-settings-local-user.json" "$HOME/.claude/settings.local.json" "User"
+merge_settings_local "$SESSION_SETTINGS_LOCAL_USER" "$HOME/.claude/settings.local.json" "User"
 
 # ============================================================
 # 3. Skills 和 Commands 同步
 # ============================================================
 
 # 用户级 skills
-if [ -d /tmp/local-skills-user ]; then
+if [ -d "$SESSION_SKILLS_USER" ]; then
     mkdir -p "$HOME/.claude/skills"
-    cp -r /tmp/local-skills-user/* "$HOME/.claude/skills/" 2>/dev/null
-    rm -rf /tmp/local-skills-user
+    cp -r "$SESSION_SKILLS_USER"/* "$HOME/.claude/skills/" 2>/dev/null
+    rm -rf "$SESSION_SKILLS_USER"
     echo "  User skills: synced"
 fi
 
 # 用户级 commands
-if [ -d /tmp/local-commands-user ]; then
+if [ -d "$SESSION_COMMANDS_USER" ]; then
     mkdir -p "$HOME/.claude/commands"
-    cp -r /tmp/local-commands-user/* "$HOME/.claude/commands/" 2>/dev/null
-    rm -rf /tmp/local-commands-user
+    cp -r "$SESSION_COMMANDS_USER"/* "$HOME/.claude/commands/" 2>/dev/null
+    rm -rf "$SESSION_COMMANDS_USER"
     echo "  User commands: synced"
 fi
 
@@ -163,58 +191,81 @@ fi
 # ============================================================
 
 # 项目级 settings.json
-merge_settings "/tmp/local-settings-project.json" "$WORKSPACE/.claude/settings.json" "Project"
+merge_settings "$SESSION_SETTINGS_PROJECT" "$WORKSPACE/.claude/settings.json" "Project"
 
 # 项目级 settings.local.json（权限设置）
-merge_settings_local "/tmp/local-settings-local-project.json" "$WORKSPACE/.claude/settings.local.json" "Project"
+merge_settings_local "$SESSION_SETTINGS_LOCAL_PROJECT" "$WORKSPACE/.claude/settings.local.json" "Project"
 
 # 项目级 skills
-if [ -d /tmp/local-skills-project ]; then
+if [ -d "$SESSION_SKILLS_PROJECT" ]; then
     mkdir -p "$WORKSPACE/.claude/skills"
-    cp -r /tmp/local-skills-project/* "$WORKSPACE/.claude/skills/" 2>/dev/null
-    rm -rf /tmp/local-skills-project
+    cp -r "$SESSION_SKILLS_PROJECT"/* "$WORKSPACE/.claude/skills/" 2>/dev/null
+    rm -rf "$SESSION_SKILLS_PROJECT"
     echo "  Project skills: synced"
 fi
 
 # ============================================================
-# 5. SSE MCP 自动注册（从本地隧道过来的 MCP 服务）
+# 5. 生成会话级 .mcp.json
 # ============================================================
 
-if [ -f /tmp/local-sse-mcps.json ]; then
-    export PATH="$HOME/.local/bin:$PATH"
+generate_project_mcp_config() {
+    local bridge_url
+    local mcp_json
 
-    # 清理上次自动注册的 SSE MCP
-    for name in $(claude mcp list 2>/dev/null | grep "remote-cc-" | awk '{print $1}'); do
-        claude mcp remove "$name" 2>/dev/null || true
-    done
+    if ! command -v jq &>/dev/null; then
+        echo "  WARNING: jq not found, skipping project .mcp.json generation"
+        rm -f "$SESSION_SSE_MCP_LIST"
+        return
+    fi
 
-    while IFS= read -r mcp_entry; do
-        [ -z "$mcp_entry" ] && continue
-        mcp_name=$(echo "$mcp_entry" | jq -r '.name')
-        mcp_url=$(echo "$mcp_entry" | jq -r '.url')
+    bridge_url="http://127.0.0.1:${BRIDGE_PORT}/sse"
+    mcp_json=$(jq -n --arg url "$bridge_url" '{
+        mcpServers: {
+            "local-bridge": {
+                type: "sse",
+                url: $url
+            }
+        }
+    }')
 
-        cloud_name="remote-cc-${mcp_name}"
-        claude mcp remove "$cloud_name" 2>/dev/null || true
-        if claude mcp add -t sse -s user -- "$cloud_name" "$mcp_url" 2>/dev/null; then
-            echo "  SSE MCP registered: $cloud_name → $mcp_url"
-        else
-            echo "  WARNING: Failed to register SSE MCP: $cloud_name"
-        fi
-    done < /tmp/local-sse-mcps.json
+    if [ -f "$SESSION_SSE_MCP_LIST" ]; then
+        while IFS= read -r mcp_entry; do
+            [ -z "$mcp_entry" ] && continue
+            mcp_name=$(echo "$mcp_entry" | jq -r '.name // empty')
+            mcp_url=$(echo "$mcp_entry" | jq -r '.url // empty')
 
-    rm -f /tmp/local-sse-mcps.json
-fi
+            if [ -z "$mcp_name" ] || [ -z "$mcp_url" ]; then
+                continue
+            fi
+
+            cloud_name="remote-cc-${mcp_name}"
+            mcp_json=$(echo "$mcp_json" | jq --arg name "$cloud_name" --arg url "$mcp_url" '
+                .mcpServers[$name] = {
+                    type: "sse",
+                    url: $url
+                }
+            ')
+            echo "  Project MCP: $cloud_name → $mcp_url"
+        done < "$SESSION_SSE_MCP_LIST"
+        rm -f "$SESSION_SSE_MCP_LIST"
+    fi
+
+    printf '%s\n' "$mcp_json" > "$WORKSPACE/.mcp.json"
+    echo "  Project MCP: wrote $WORKSPACE/.mcp.json"
+}
+
+generate_project_mcp_config
 
 # ============================================================
-# 6. 生成 ~/workspace/CLAUDE.md（项目级 + Remote CC 上下文）
+# 6. 生成会话级 CLAUDE.md（项目级 + Remote CC 上下文）
 # ============================================================
 
 CLAUDE_MD="$WORKSPACE/CLAUDE.md"
 
 # 如果有项目级 CLAUDE.md，先写入
-if [ -f /tmp/local-claude-project.md ]; then
-    cp /tmp/local-claude-project.md "$CLAUDE_MD"
-    rm -f /tmp/local-claude-project.md
+if [ -f "$SESSION_PROJECT_CLAUDE" ]; then
+    cp "$SESSION_PROJECT_CLAUDE" "$CLAUDE_MD"
+    rm -f "$SESSION_PROJECT_CLAUDE"
     echo "  Project CLAUDE.md: synced"
     # 追加分隔线
     cat >> "$CLAUDE_MD" << 'SEPARATOR'
@@ -292,20 +343,24 @@ For PDF files, it extracts text content automatically (requires poppler).
 CLAUDEMD
 
 # ============================================================
-# 7. Memory 后台同步守护进程
+# 7. Memory 后台同步守护进程（按会话隔离）
 # ============================================================
 
-# 停掉上次残留的同步进程
-pkill -f "/opt/remote-cc/memory-sync.sh" 2>/dev/null || true
+if [ -f "$SESSION_MEMORY_PID_FILE" ]; then
+    OLD_SYNC_PID=$(cat "$SESSION_MEMORY_PID_FILE" 2>/dev/null)
+    if [ -n "$OLD_SYNC_PID" ] && kill -0 "$OLD_SYNC_PID" 2>/dev/null; then
+        kill "$OLD_SYNC_PID" 2>/dev/null || true
+    fi
+    rm -f "$SESSION_MEMORY_PID_FILE"
+fi
 
 if [ "$LOCAL_DIR" != "unknown" ] && [ -f /opt/remote-cc/memory-sync.sh ]; then
-    BRIDGE_PORT="${BRIDGE_PORT:-3100}"
-
     # 通过 bridge 动态发现本地 memory 路径（处理 CJK 编码等问题）
     ENCODED_DIR=$(jq -rn --arg v "$LOCAL_DIR" '$v|@uri')
     LOCAL_MEMORY_PATH=$(curl -s --max-time 5 "http://127.0.0.1:${BRIDGE_PORT}/sync/memory-path?workdir=${ENCODED_DIR}" 2>/dev/null | jq -r '.memoryPath // empty' 2>/dev/null)
 
-    CLOUD_MEMORY_PATH="$HOME/.claude/projects/-root-workspace/memory"
+    WORKSPACE_PROJECT_KEY=$(printf '%s' "$WORKSPACE" | sed 's#/#-#g')
+    CLOUD_MEMORY_PATH="$HOME/.claude/projects/${WORKSPACE_PROJECT_KEY}/memory"
 
     if [ -n "$LOCAL_MEMORY_PATH" ]; then
         mkdir -p "$CLOUD_MEMORY_PATH"
@@ -314,11 +369,12 @@ if [ "$LOCAL_DIR" != "unknown" ] && [ -f /opt/remote-cc/memory-sync.sh ]; then
             "$CLOUD_MEMORY_PATH" \
             "$BRIDGE_PORT" \
             30 \
-            > /tmp/memory-sync.log 2>&1 &
+            > "$SESSION_MEMORY_LOG" 2>&1 &
+        echo "$!" > "$SESSION_MEMORY_PID_FILE"
         echo "  Memory sync: started (PID $!, interval 30s)"
     else
         echo "  Memory sync: skipped (local memory path not found)"
     fi
 fi
 
-echo "  Session prepared: local dir = $LOCAL_DIR"
+echo "  Session prepared: $SESSION_ID → $WORKSPACE"
