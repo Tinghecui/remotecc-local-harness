@@ -131,10 +131,33 @@ upload_dir_if_exists() {
     local src="$1"
     local dest_name="$2"
     local label="$3"
+    local stage_dir
+    local had_entries=0
+    local entry
+    local base_name
 
     if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp -q -P "$SSH_PORT" -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        stage_dir=$(mktemp -d "/tmp/remote-cc-upload.XXXXXX")
+
+        for entry in "$src"/*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+
+            if [ -L "$entry" ] && [ ! -e "$entry" ]; then
+                echo "  WARNING: Skipping broken symlink: $entry"
+                continue
+            fi
+
+            base_name="$(basename "$entry")"
+            cp -R -L "$entry" "$stage_dir/$base_name"
+            had_entries=1
+        done
+
+        if [ "$had_entries" -eq 1 ]; then
+            scp -q -P "$SSH_PORT" -r "$stage_dir" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        fi
+
+        rm -rf "$stage_dir"
     fi
 }
 
@@ -276,20 +299,19 @@ ssh -p "$SSH_PORT" "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REM
 upload_file_if_exists "$HOME/.claude/CLAUDE.md" "local-claude-user.md" "Uploading user-level CLAUDE.md..."
 upload_file_if_exists "$LOCAL_WORKDIR/CLAUDE.md" "local-claude-project.md" "Uploading project-level CLAUDE.md..."
 
-# 上传配置文件（settings、skills、commands）
+# 上传配置文件（settings、commands）
 echo "  Syncing config..."
 upload_file_if_exists "$HOME/.claude/settings.json" "local-settings-user.json" ""
 upload_file_if_exists "$HOME/.claude/settings.local.json" "local-settings-local-user.json" ""
-upload_dir_if_exists "$HOME/.claude/skills" "local-skills-user" ""
 upload_dir_if_exists "$HOME/.claude/commands" "local-commands-user" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-project.json" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json" ""
-upload_dir_if_exists "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" ""
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
-    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh -p "$SSH_PORT" "$CLOUD_HOST" "cat > '$(remote_stage_path "local-sse-mcps.json")'"
+    REMOTE_MCP_STAGE_PATH="$(remote_stage_path "local-sse-mcps.json")"
+    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh -p "$SSH_PORT" "$CLOUD_HOST" "cat > '$REMOTE_MCP_STAGE_PATH'"
     echo "  Project MCP list: uploaded"
 fi
 
@@ -308,7 +330,7 @@ if [ ${#CLAUDE_EXTRA_ARGS[@]} -gt 0 ]; then
     done
 fi
 
-REMOTE_CMD="export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$REMOTE_BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && export REMOTE_CC_SESSION_ID='$SESSION_ID' && export REMOTE_CC_SESSION_TMP='$REMOTE_SESSION_DIR' && export REMOTE_CC_WORKSPACE_NAME='$WORKSPACE_NAME' && /opt/remote-cc/prepare-session.sh && cd \"\$HOME/workspace/$WORKSPACE_NAME\" && $CLAUDE_CMD"
+REMOTE_CMD="export PATH=\$HOME/.local/bin:\$PATH && claude mcp remove local-bridge >/dev/null 2>&1 || true && export BRIDGE_PORT='$REMOTE_BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && export REMOTE_CC_SESSION_ID='$SESSION_ID' && export REMOTE_CC_SESSION_TMP='$REMOTE_SESSION_DIR' && export REMOTE_CC_WORKSPACE_NAME='$WORKSPACE_NAME' && /opt/remote-cc/prepare-session.sh && cd \"\$HOME/workspace/$WORKSPACE_NAME\" && $CLAUDE_CMD"
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \

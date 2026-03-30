@@ -14,7 +14,13 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$SOURCE_DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$PROJECT_DIR/.remote-cc.env"
 
@@ -163,7 +169,7 @@ if ! curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
 
     # 后台启动 bridge，日志写到临时文件
     BRIDGE_LOG="/tmp/remote-cc-bridge-$$.log"
-    "$SCRIPT_DIR/start-bridge.sh" > "$BRIDGE_LOG" 2>&1 &
+    nohup "$SCRIPT_DIR/start-bridge.sh" > "$BRIDGE_LOG" 2>&1 </dev/null &
     BRIDGE_PID=$!
 
     # 等待 bridge 就绪
