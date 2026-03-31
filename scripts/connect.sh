@@ -3,7 +3,7 @@
 # SSH 连接到云端并启动 Claude Code（使用持久化隧道）
 # 用法: ./connect.sh [SSH_HOST] [LOCAL_WORKDIR]
 # 示例: ./connect.sh
-#       ./connect.sh root@99.173.22.106
+#       ./connect.sh root@1.2.3.4
 #       ./connect.sh root@my-server ~/my-project
 # 不指定 LOCAL_WORKDIR 时默认使用当前目录 (pwd)
 #
