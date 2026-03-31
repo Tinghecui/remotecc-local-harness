@@ -61,6 +61,27 @@ ssh_remote() {
     ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" "${SSH_KEY_FLAG[@]}" "$REMOTE_HOST" "$@"
 }
 
+check_ssh_with_retry() {
+    local err_file="$1"
+    local attempt=1
+    local max_attempts=3
+
+    : > "$err_file"
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if ssh_remote "echo ok" > /dev/null 2>"$err_file"; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
 run_remote_bash_with_retry() {
     local label="$1"
     local attempt=1
@@ -135,7 +156,7 @@ echo "  Node.js: $(node -v)"
 
 # 检查 SSH 连接
 SSH_CHECK_ERR=$(mktemp)
-if ! ssh_remote "echo ok" > /dev/null 2>"$SSH_CHECK_ERR"; then
+if ! check_ssh_with_retry "$SSH_CHECK_ERR"; then
     echo "  ERROR: Cannot SSH to $REMOTE_HOST"
     if [ -s "$SSH_CHECK_ERR" ]; then
         sed 's/^/  SSH says: /' "$SSH_CHECK_ERR"

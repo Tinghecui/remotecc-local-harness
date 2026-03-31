@@ -66,7 +66,38 @@ parse_existing_host() {
 }
 
 parse_existing_host
-EXISTING_SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
+
+build_copy_key_default() {
+    local candidate
+    for candidate in "${SSH_KEYS[@]}"; do
+        if [[ "$candidate" == *id_ed25519 ]]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    if [ ${#SSH_KEYS[@]} -gt 0 ]; then
+        printf '%s' "${SSH_KEYS[0]}"
+    fi
+}
+
+ssh_check_with_retry() {
+    local attempt=1
+    local max_attempts=3
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "echo ok" > /dev/null 2>&1; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════╗${NC}"
@@ -116,7 +147,7 @@ while IFS= read -r pubkey; do
     [ -f "$privkey" ] && SSH_KEYS+=("$privkey")
 done < <(ls ~/.ssh/*.pub 2>/dev/null)
 
-SELECTED_KEY=""
+COPY_ID_KEY=""
 
 if [ ${#SSH_KEYS[@]} -eq 0 ]; then
     warn "No SSH keys found in ~/.ssh/"
@@ -126,15 +157,12 @@ if [ ${#SSH_KEYS[@]} -eq 0 ]; then
         ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "ccc@$(hostname -s)"
         echo ""
         ok "Key generated: ~/.ssh/id_ed25519"
-        SELECTED_KEY="$HOME/.ssh/id_ed25519"
+        COPY_ID_KEY="$HOME/.ssh/id_ed25519"
     else
         fail "Cannot continue without SSH keys."
         echo "    Generate one manually: ssh-keygen -t ed25519"
         exit 1
     fi
-elif [ ${#SSH_KEYS[@]} -eq 1 ]; then
-    SELECTED_KEY="${SSH_KEYS[0]}"
-    info "Using SSH key: $SELECTED_KEY"
 else
     info "Found SSH keys:"
     for i in "${!SSH_KEYS[@]}"; do
@@ -145,66 +173,62 @@ else
         [[ "$local_key" == *ed25519* ]] && rec=" (recommended)"
         printf "      %d) %s %s%s\n" "$((i+1))" "$(basename "$local_key")" "$key_type" "$rec"
     done
-    echo ""
-    DEFAULT_KEY_INDEX=1
-    if [ -n "$EXISTING_SSH_KEY" ]; then
-        for i in "${!SSH_KEYS[@]}"; do
-            if [ "${SSH_KEYS[$i]}" = "$EXISTING_SSH_KEY" ]; then
-                DEFAULT_KEY_INDEX=$((i + 1))
-                break
-            fi
-        done
-    fi
-    ask "Select key" "$DEFAULT_KEY_INDEX"
-    KEY_IDX=$((REPLY - 1))
-    if [ "$KEY_IDX" -lt 0 ] || [ "$KEY_IDX" -ge ${#SSH_KEYS[@]} ]; then
-        fail "Invalid selection."
-        exit 1
-    fi
-    SELECTED_KEY="${SSH_KEYS[$KEY_IDX]}"
 fi
+
+COPY_ID_KEY="${COPY_ID_KEY:-$(build_copy_key_default)}"
+info "Using your local SSH config/agent defaults for connection testing and deploy."
 
 echo ""
 
 # 构建 SSH 选项
-SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -i "$SELECTED_KEY" -p "$SSH_PORT")
+SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -p "$SSH_PORT")
 
 # 测试连接
 printf "    Testing SSH connection to %s:%s..." "$SSH_TARGET" "$SSH_PORT"
 
-if ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "echo ok" > /dev/null 2>&1; then
+if ssh_check_with_retry; then
     echo ""
     ok "Connected successfully"
 else
     echo ""
-    warn "Connection failed with key authentication."
+    warn "Connection failed using your local SSH config/keys."
     echo ""
-    info "The SSH key needs to be uploaded to the server."
-    echo ""
-
-    if ask_yn "Upload key via ssh-copy-id (will ask for password)?"; then
-        echo ""
-        # ssh-copy-id 需要交互输入密码，不能用 BatchMode
-        ssh-copy-id -i "$SELECTED_KEY" -p "$SSH_PORT" "$SSH_TARGET"
+    if [ -n "$COPY_ID_KEY" ]; then
+        info "If the server doesn't know your public key yet, we can upload one."
         echo ""
 
-        # 重新测试
-        printf "    Re-testing connection..."
-        if ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "echo ok" > /dev/null 2>&1; then
+        if ask_yn "Upload $(basename "$COPY_ID_KEY") via ssh-copy-id (will ask for password)?"; then
             echo ""
-            ok "Connected successfully"
+            # ssh-copy-id 需要交互输入密码，不能用 BatchMode
+            ssh-copy-id -i "$COPY_ID_KEY" -p "$SSH_PORT" "$SSH_TARGET"
+            echo ""
+
+            # 重新测试
+            printf "    Re-testing connection..."
+            if ssh_check_with_retry; then
+                echo ""
+                ok "Connected successfully"
+            else
+                echo ""
+                fail "Still cannot connect. Please check manually:"
+                echo "      ssh -p $SSH_PORT $SSH_TARGET"
+                exit 1
+            fi
         else
             echo ""
-            fail "Still cannot connect. Please check manually:"
-            echo "      ssh -i $SELECTED_KEY -p $SSH_PORT $SSH_TARGET"
+            echo "    Manual setup options:"
+            echo "      1) Upload key:     ssh-copy-id -i $COPY_ID_KEY -p $SSH_PORT $SSH_TARGET"
+            echo "      2) Test directly:  ssh -p $SSH_PORT $SSH_TARGET"
+            echo "      3) If using password auth, ensure the server allows it in /etc/ssh/sshd_config"
+            echo ""
+            fail "Run 'ccc setup' again after fixing SSH access."
             exit 1
         fi
     else
         echo ""
         echo "    Manual setup options:"
-        echo "      1) Upload key:     ssh-copy-id -i $SELECTED_KEY -p $SSH_PORT $SSH_TARGET"
-        echo "      2) Copy manually:  cat ${SELECTED_KEY}.pub | ssh -p $SSH_PORT $SSH_TARGET 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'"
-        echo "      3) If using password auth, ensure the server allows it in /etc/ssh/sshd_config"
+        echo "      1) Test directly:  ssh -p $SSH_PORT $SSH_TARGET"
+        echo "      2) If using password auth, ensure the server allows it in /etc/ssh/sshd_config"
         echo ""
         fail "Run 'ccc setup' again after fixing SSH access."
         exit 1
@@ -263,7 +287,6 @@ echo ""
         echo ""
         # 设置环境变量供 setup.sh 使用
         export REMOTE_CC_SSH_PORT="$SSH_PORT"
-        export REMOTE_CC_SSH_KEY="$SELECTED_KEY"
         "$PROJECT_DIR/setup.sh" "$SSH_TARGET"
         DEPLOY_OK=$?
 
@@ -294,9 +317,6 @@ REMOTE_CC_HOST=$SSH_TARGET
 
 # SSH 端口
 REMOTE_CC_SSH_PORT=$SSH_PORT
-
-# SSH 私钥（本地路径）
-REMOTE_CC_SSH_KEY=$SELECTED_KEY
 
 # MCP Bridge 端口
 REMOTE_CC_PORT=$BRIDGE_PORT

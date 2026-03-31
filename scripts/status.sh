@@ -32,6 +32,25 @@ SSH_BASE_ARGS=(-p "$SSH_PORT")
 if [ -n "$SSH_KEY" ]; then
     SSH_BASE_ARGS+=(-i "$SSH_KEY")
 fi
+
+check_cloud_ssh() {
+    local attempt=1
+    local max_attempts=3
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if ssh -o ConnectTimeout=10 -o BatchMode=yes "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
 if [ -z "$CLOUD_HOST" ]; then
     echo "Error: VPS host not specified."
     echo "Usage: ./scripts/status.sh <SSH_USER@HOST>"
@@ -45,7 +64,7 @@ if [[ "$CLOUD_HOST" != *@* ]]; then
 fi
 
 echo "[Cloud Server: $CLOUD_HOST]"
-if ssh -o ConnectTimeout=10 -o BatchMode=yes "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
+if check_cloud_ssh; then
     echo "  SSH:    OK"
     CLAUDE_VERSION=$(ssh -o ConnectTimeout=10 "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "export PATH=\$HOME/.local/bin:\$PATH && claude --version" 2>/dev/null)
     if [ -n "$CLAUDE_VERSION" ]; then
