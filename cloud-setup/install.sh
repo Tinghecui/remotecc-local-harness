@@ -11,6 +11,36 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_HOST="${1:?Usage: ./install.sh <SSH_USER@HOST> [MCP_SSE_URL]}"
 MCP_SSE_URL="${2:-http://127.0.0.1:3100/sse}"
+SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+
+ssh_remote() {
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$@"
+}
+
+upload_cloud_setup() {
+    local attempt=1
+    local max_attempts=3
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            echo "  Upload retry $attempt/$max_attempts..."
+            sleep 2
+        else
+            echo "  Uploading setup bundle..."
+        fi
+
+        if COPYFILE_DISABLE=1 tar -C "$SCRIPT_DIR" -czf - hooks claude-config prepare-session.sh memory-sync.sh | \
+            ssh_remote "rm -rf /tmp/remote-cc-setup && mkdir -p /tmp/remote-cc-setup && tar -xzf - -C /tmp/remote-cc-setup"; then
+            echo "  Files uploaded"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    echo "  ERROR: Failed to upload setup files after $max_attempts attempts"
+    return 1
+}
 
 echo "========================================="
 echo "  Remote CC - Cloud Deploy"
@@ -21,20 +51,18 @@ echo ""
 
 # ---- 上传文件 ----
 echo "[1/4] Uploading files..."
-ssh "$REMOTE_HOST" "mkdir -p /tmp/remote-cc-setup"
-scp -r "$SCRIPT_DIR/hooks" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -r "$SCRIPT_DIR/claude-config" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp "$SCRIPT_DIR/prepare-session.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp "$SCRIPT_DIR/memory-sync.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
+upload_cloud_setup
 
 # ---- 远程安装 ----
 echo "[2/4] Installing on remote..."
-ssh "$REMOTE_HOST" bash << 'INSTALL_EOF'
+ssh_remote bash << 'INSTALL_EOF'
 set -e
 
 # 系统依赖
+echo "  Installing system packages..."
 apt-get update -qq 2>/dev/null
 apt-get install -y -qq curl git jq 2>/dev/null
+echo "  System packages: ready"
 
 # 创建非 root 用户（Claude Code 禁止 root 使用 --dangerously-skip-permissions）
 if ! id cc &>/dev/null; then
@@ -58,7 +86,7 @@ INSTALL_EOF
 
 # ---- 配置 ----
 echo "[3/4] Configuring..."
-ssh "$REMOTE_HOST" bash << CONF_EOF
+ssh_remote bash << CONF_EOF
 set -e
 
 # Hook 脚本 + prepare-session（全局目录，root 部署）
@@ -88,7 +116,7 @@ CONF_EOF
 
 # ---- 验证 ----
 echo "[4/4] Verifying..."
-ssh "$REMOTE_HOST" bash << 'VERIFY_EOF'
+ssh_remote bash << 'VERIFY_EOF'
 CC_HOME=$(eval echo ~cc)
 echo "  Claude:   $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
 echo "  Hook:     $(test -x /opt/remote-cc/hooks/block-builtin.sh && echo 'OK' || echo 'MISSING')"

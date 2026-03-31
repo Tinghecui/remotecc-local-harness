@@ -46,12 +46,44 @@ fi
 BRIDGE_PORT="${BRIDGE_PORT:-${REMOTE_CC_PORT:-3100}}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
 VERIFY_ROOTS="${REMOTE_CC_ROOTS:-$(build_default_roots)}"
+SSH_BASE_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
 SSH_PORT_FLAG=()
-SCP_PORT_FLAG=()
 if [ "$SSH_PORT" != "22" ]; then
     SSH_PORT_FLAG=(-p "$SSH_PORT")
-    SCP_PORT_FLAG=(-P "$SSH_PORT")
 fi
+
+ssh_remote() {
+    ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "$@"
+}
+
+upload_cloud_setup() {
+    local attempt=1
+    local max_attempts=3
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            echo "  Upload retry $attempt/$max_attempts..."
+            sleep 2
+        else
+            echo "  Uploading setup bundle..."
+        fi
+
+        if COPYFILE_DISABLE=1 tar -C "$SCRIPT_DIR/cloud-setup" -czf - \
+            hooks \
+            claude-config \
+            prepare-session.sh \
+            memory-sync.sh | \
+            ssh_remote "rm -rf /tmp/remote-cc-setup && mkdir -p /tmp/remote-cc-setup && tar -xzf - -C /tmp/remote-cc-setup"; then
+            echo "  Files uploaded"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    echo "  ERROR: Failed to upload setup files after $max_attempts attempts"
+    return 1
+}
 
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  Remote CC - One-Click Setup                     ║"
@@ -72,7 +104,7 @@ fi
 echo "  Node.js: $(node -v)"
 
 # 检查 SSH 连接
-if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "echo ok" > /dev/null 2>&1; then
+if ! ssh_remote "echo ok" > /dev/null 2>&1; then
     echo "  ERROR: Cannot SSH to $REMOTE_HOST"
     echo "  Make sure you have SSH key access. Run: ssh-copy-id $REMOTE_HOST"
     exit 1
@@ -96,18 +128,15 @@ echo ""
 echo "[3/5] Deploying to cloud ($REMOTE_HOST)..."
 
 # 上传文件
-ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "mkdir -p /tmp/remote-cc-setup"
-scp -q "${SCP_PORT_FLAG[@]}" -r "$SCRIPT_DIR/cloud-setup/hooks" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q "${SCP_PORT_FLAG[@]}" -r "$SCRIPT_DIR/cloud-setup/claude-config" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q "${SCP_PORT_FLAG[@]}" "$SCRIPT_DIR/cloud-setup/prepare-session.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-scp -q "${SCP_PORT_FLAG[@]}" "$SCRIPT_DIR/cloud-setup/memory-sync.sh" "$REMOTE_HOST:/tmp/remote-cc-setup/"
-echo "  Files uploaded"
+upload_cloud_setup
 
 # 安装 Claude Code
-ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" bash << 'REMOTE_INSTALL'
+ssh_remote bash << 'REMOTE_INSTALL'
 set -e
+echo "  Installing system packages..."
 apt-get update -qq 2>/dev/null
 apt-get install -y -qq curl git jq 2>/dev/null
+echo "  System packages: ready"
 
 # 创建非 root 用户（Claude Code 禁止 root 使用 --dangerously-skip-permissions）
 if ! id cc &>/dev/null; then
@@ -119,12 +148,16 @@ fi
 
 # 以 cc 用户安装 Claude Code
 if ! su - cc -c 'command -v claude &>/dev/null || test -f ~/.local/bin/claude' 2>/dev/null; then
+    echo "  Installing Claude Code for cc user (first run can take ~30s)..."
     su - cc -c 'curl -fsSL https://claude.ai/install.sh | bash' 2>&1
     su - cc -c 'echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc'
+else
+    echo "  Claude Code: already installed"
 fi
 echo "  Claude Code: $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
 
 # 以 cc 用户安装插件
+echo "  Configuring Claude plugins..."
 su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins marketplace add https://github.com/anthropics/skills.git 2>/dev/null || true'
 su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins install document-skills@anthropic-agent-skills 2>/dev/null' && \
     echo "  Plugin: document-skills installed" || \
@@ -132,7 +165,7 @@ su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins install docum
 REMOTE_INSTALL
 
 # 配置 Hook + MCP
-ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" bash << REMOTE_CONFIG
+ssh_remote bash << REMOTE_CONFIG
 set -e
 
 # Hook + prepare-session（全局目录，root 部署）
@@ -180,7 +213,7 @@ else
 fi
 
 # 通过 SSH 隧道验证连通性
-HEALTH=$(ssh "${SSH_PORT_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
+HEALTH=$(ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
   "curl -s http://127.0.0.1:$BRIDGE_PORT/health 2>/dev/null" || echo "FAILED")
 
 if [ "$BRIDGE_STARTED_FOR_VERIFY" = "1" ]; then
