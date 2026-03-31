@@ -130,60 +130,24 @@ case "$SUBCOMMAND" in
         echo "ccc — Updating Remote Claude Code..."
         echo ""
 
-        cd "$PROJECT_DIR"
+        # 从远程下载最新 install.sh 并执行（全量替换 + 可选 redeploy）
+        INSTALLER_URL="${REMOTE_CC_REPO_URL:-https://raw.githubusercontent.com/Tinghecui/remotecc-local-harness/main/install.sh}"
 
-        # Check for uncommitted changes
-        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-            echo "  Warning: You have local changes. Stashing..."
-            git stash -q
-            STASHED=1
-        fi
-
-        # Pull latest
-        BEFORE=$(git rev-parse --short HEAD)
-        git fetch origin -q
-        git pull origin --ff-only -q 2>/dev/null || {
-            echo "  ERROR: Cannot fast-forward. You have diverged from remote."
-            echo "  Run 'cd $PROJECT_DIR && git pull' manually."
-            [ "${STASHED:-}" = "1" ] && git stash pop -q 2>/dev/null
-            exit 1
-        }
-        AFTER=$(git rev-parse --short HEAD)
-
-        if [ "$BEFORE" = "$AFTER" ]; then
-            echo "  Already up to date ($AFTER)"
-        else
-            echo "  Updated: $BEFORE → $AFTER"
-            echo ""
-            echo "  Changes:"
-            git log --oneline "$BEFORE".."$AFTER" | sed 's/^/    /'
-        fi
-
-        # Restore stashed changes
-        [ "${STASHED:-}" = "1" ] && git stash pop -q 2>/dev/null && echo "  Local changes restored."
-
-        # Reinstall dependencies
-        echo ""
-        echo "  Updating bridge dependencies..."
-        cd "$PROJECT_DIR/local-bridge"
-        npm install --silent 2>&1
-        echo "  Done."
-
-        # Redeploy to VPS if configured
+        INSTALL_ARGS=()
         CLOUD_HOST="${REMOTE_CC_HOST:-}"
         if [ -n "$CLOUD_HOST" ]; then
-            echo ""
-            read -p "  Redeploy to $CLOUD_HOST? (Y/n) " -n 1 -r
+            echo "  VPS configured: $CLOUD_HOST"
+            read -p "  Redeploy to VPS after update? (Y/n) " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                export REMOTE_CC_SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
-                "$PROJECT_DIR/setup.sh" "$CLOUD_HOST"
+                INSTALL_ARGS+=(--deploy)
+            else
+                INSTALL_ARGS+=(--skip-deploy)
             fi
         fi
 
-        echo ""
-        echo "  Update complete! Run 'ccc' to start."
-        exit 0
+        echo "  Downloading latest installer..."
+        exec bash <(curl -fsSL "$INSTALLER_URL") "${INSTALL_ARGS[@]}"
         ;;
 esac
 

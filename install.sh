@@ -149,34 +149,37 @@ echo ""
 # ── Step 2: Clone or update repo ─────────────────────────
 echo -e "${BOLD}[2/${TOTAL_STEPS}] Installing to $INSTALL_DIR...${NC}"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-    info "Existing installation found, updating..."
-    cd "$INSTALL_DIR"
+ENV_BACKUP=""
+if [ -d "$INSTALL_DIR" ]; then
+    info "Existing installation found, performing clean upgrade..."
 
-    # Stash any local changes (like .remote-cc.env edits that leaked in)
-    git stash -q 2>/dev/null || true
-
-    git fetch origin --tags -q
-    if [ -n "$VERSION" ]; then
-        git checkout "$VERSION" -q
-        ok "Checked out $VERSION"
-    else
-        git checkout main -q 2>/dev/null || git checkout master -q 2>/dev/null
-        git pull origin --ff-only -q 2>/dev/null || git reset --hard origin/main -q 2>/dev/null || git reset --hard origin/master -q
-        ok "Updated to latest"
+    # 备份用户配置
+    if [ -f "$INSTALL_DIR/.remote-cc.env" ]; then
+        ENV_BACKUP=$(mktemp /tmp/remote-cc-env-backup.XXXXXX)
+        cp "$INSTALL_DIR/.remote-cc.env" "$ENV_BACKUP"
+        ok "Backed up .remote-cc.env"
     fi
 
-    # Restore stashed changes
-    git stash pop -q 2>/dev/null || true
+    # 全量删除旧代码
+    rm -rf "$INSTALL_DIR"
+    ok "Removed old installation"
+fi
+
+# 全新 clone
+if [ -n "$VERSION" ]; then
+    git clone --branch "$VERSION" --depth 1 "$REPO_URL" "$INSTALL_DIR" -q
+    ok "Cloned $VERSION"
 else
-    if [ -n "$VERSION" ]; then
-        git clone --branch "$VERSION" --depth 1 "$REPO_URL" "$INSTALL_DIR" -q
-        ok "Cloned $VERSION"
-    else
-        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" -q
-        ok "Cloned latest"
-    fi
-    cd "$INSTALL_DIR"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" -q
+    ok "Cloned latest"
+fi
+cd "$INSTALL_DIR"
+
+# 还原用户配置
+if [ -n "$ENV_BACKUP" ] && [ -f "$ENV_BACKUP" ]; then
+    cp "$ENV_BACKUP" "$INSTALL_DIR/.remote-cc.env"
+    rm -f "$ENV_BACKUP"
+    ok "Restored .remote-cc.env"
 fi
 
 CURRENT_VERSION=$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)
