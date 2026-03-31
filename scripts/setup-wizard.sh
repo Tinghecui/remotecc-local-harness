@@ -66,6 +66,7 @@ parse_existing_host() {
 }
 
 parse_existing_host
+EXISTING_SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════╗${NC}"
@@ -145,7 +146,16 @@ else
         printf "      %d) %s %s%s\n" "$((i+1))" "$(basename "$local_key")" "$key_type" "$rec"
     done
     echo ""
-    ask "Select key" "1"
+    DEFAULT_KEY_INDEX=1
+    if [ -n "$EXISTING_SSH_KEY" ]; then
+        for i in "${!SSH_KEYS[@]}"; do
+            if [ "${SSH_KEYS[$i]}" = "$EXISTING_SSH_KEY" ]; then
+                DEFAULT_KEY_INDEX=$((i + 1))
+                break
+            fi
+        done
+    fi
+    ask "Select key" "$DEFAULT_KEY_INDEX"
     KEY_IDX=$((REPLY - 1))
     if [ "$KEY_IDX" -lt 0 ] || [ "$KEY_IDX" -ge ${#SSH_KEYS[@]} ]; then
         fail "Invalid selection."
@@ -157,7 +167,7 @@ fi
 echo ""
 
 # 构建 SSH 选项
-SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes -i "$SELECTED_KEY" -p "$SSH_PORT")
+SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -i "$SELECTED_KEY" -p "$SSH_PORT")
 
 # 测试连接
 printf "    Testing SSH connection to %s:%s..." "$SSH_TARGET" "$SSH_PORT"
@@ -249,12 +259,13 @@ echo ""
 info "This will install Claude Code and configure the VPS."
 echo ""
 
-if ask_yn "Proceed with deployment?"; then
-    echo ""
-    # 设置环境变量供 setup.sh 使用
-    export REMOTE_CC_SSH_PORT="$SSH_PORT"
-    "$PROJECT_DIR/setup.sh" "$SSH_TARGET"
-    DEPLOY_OK=$?
+    if ask_yn "Proceed with deployment?"; then
+        echo ""
+        # 设置环境变量供 setup.sh 使用
+        export REMOTE_CC_SSH_PORT="$SSH_PORT"
+        export REMOTE_CC_SSH_KEY="$SELECTED_KEY"
+        "$PROJECT_DIR/setup.sh" "$SSH_TARGET"
+        DEPLOY_OK=$?
 
     if [ "${DEPLOY_OK:-0}" -ne 0 ]; then
         fail "Deployment failed. Check the output above."
@@ -283,6 +294,9 @@ REMOTE_CC_HOST=$SSH_TARGET
 
 # SSH 端口
 REMOTE_CC_SSH_PORT=$SSH_PORT
+
+# SSH 私钥（本地路径）
+REMOTE_CC_SSH_KEY=$SELECTED_KEY
 
 # MCP Bridge 端口
 REMOTE_CC_PORT=$BRIDGE_PORT

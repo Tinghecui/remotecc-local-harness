@@ -38,6 +38,25 @@ LOCAL_WORKDIR="${POSITIONAL_ARGS[2]:-$(pwd)}"
 REMOTE_PORT_START="${REMOTE_CC_REMOTE_PORT_START:-43000}"
 REMOTE_PORT_END="${REMOTE_CC_REMOTE_PORT_END:-48999}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
+SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
+SSH_BASE_ARGS=(-p "$SSH_PORT")
+SCP_BASE_ARGS=(-P "$SSH_PORT")
+if [ -n "$SSH_KEY" ]; then
+    SSH_BASE_ARGS+=(-i "$SSH_KEY")
+    SCP_BASE_ARGS+=(-i "$SSH_KEY")
+fi
+
+ssh_remote() {
+    ssh "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
+}
+
+ssh_remote_quick() {
+    ssh -o ConnectTimeout=10 "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
+}
+
+scp_remote() {
+    scp -q "${SCP_BASE_ARGS[@]}" "$@"
+}
 
 if [ -z "$CLOUD_HOST" ]; then
     echo "Error: SSH host not specified."
@@ -98,7 +117,7 @@ allocate_remote_port() {
             *":$port:"*) continue ;;
         esac
 
-        ssh -o ConnectTimeout=5 -p "$SSH_PORT" "$CLOUD_HOST" "
+        ssh_remote_quick "
             PORT='$port'
             if (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print \$4}' | grep -Eq '(^|[.:])'\$PORT'$'; then
                 exit 0
@@ -136,7 +155,7 @@ upload_file_if_exists() {
 
     if [ -f "$src" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp -q -P "$SSH_PORT" "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        scp_remote "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
     fi
 }
 
@@ -147,7 +166,7 @@ upload_dir_if_exists() {
 
     if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp -q -P "$SSH_PORT" -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        scp_remote -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
     fi
 }
 
@@ -225,7 +244,7 @@ resolve_remote_workspace_name() {
             ;;
     esac
 
-    ssh -p "$SSH_PORT" "$CLOUD_HOST" "
+    ssh_remote "
         command -v python3 >/dev/null 2>&1 || {
             printf '%s\n' '$PROJECT_SLUG-$PROJECT_HASH'
             exit 0
@@ -375,7 +394,7 @@ echo "Connecting... (Ctrl+D or /exit to quit)"
 echo ""
 
 # 准备云端会话暂存目录（root 创建，chown 给 cc 用户）
-ssh -p "$SSH_PORT" "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR' && chown cc:cc '$REMOTE_SESSION_DIR'" || exit 1
+ssh_remote "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR' && chown cc:cc '$REMOTE_SESSION_DIR'" || exit 1
 
 # 上传本地 CLAUDE.md 文件（用户级 + 项目级）
 upload_file_if_exists "$HOME/.claude/CLAUDE.md" "local-claude-user.md" "Uploading user-level CLAUDE.md..."
@@ -394,7 +413,7 @@ upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" 
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
-    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh -p "$SSH_PORT" "$CLOUD_HOST" "cat > '$(remote_stage_path "local-sse-mcps.json")'"
+    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh_remote "cat > '$(remote_stage_path "local-sse-mcps.json")'"
     echo "  Project MCP list: uploaded"
 fi
 
@@ -419,7 +438,7 @@ REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HO
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \
-        -p "$SSH_PORT" \
+        "${SSH_BASE_ARGS[@]}" \
         -o ServerAliveInterval=30 \
         -o ServerAliveCountMax=3 \
         -o ExitOnForwardFailure=yes \

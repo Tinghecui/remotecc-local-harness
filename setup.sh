@@ -45,15 +45,45 @@ if [ -z "$REMOTE_HOST" ]; then
 fi
 BRIDGE_PORT="${BRIDGE_PORT:-${REMOTE_CC_PORT:-3100}}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
+SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
 VERIFY_ROOTS="${REMOTE_CC_ROOTS:-$(build_default_roots)}"
 SSH_BASE_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
 SSH_PORT_FLAG=()
+SSH_KEY_FLAG=()
 if [ "$SSH_PORT" != "22" ]; then
     SSH_PORT_FLAG=(-p "$SSH_PORT")
 fi
+if [ -n "$SSH_KEY" ]; then
+    SSH_KEY_FLAG=(-i "$SSH_KEY")
+fi
 
 ssh_remote() {
-    ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" "$@"
+    ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" "${SSH_KEY_FLAG[@]}" "$REMOTE_HOST" "$@"
+}
+
+run_remote_bash_with_retry() {
+    local label="$1"
+    local attempt=1
+    local max_attempts=3
+    local script
+
+    script=$(cat)
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            echo "  ${label}: retry $attempt/$max_attempts..."
+            sleep 2
+        fi
+
+        if printf '%s' "$script" | ssh_remote bash; then
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    echo "  ERROR: ${label} failed after $max_attempts attempts"
+    return 1
 }
 
 upload_cloud_setup() {
@@ -104,11 +134,29 @@ fi
 echo "  Node.js: $(node -v)"
 
 # 检查 SSH 连接
-if ! ssh_remote "echo ok" > /dev/null 2>&1; then
+SSH_CHECK_ERR=$(mktemp)
+if ! ssh_remote "echo ok" > /dev/null 2>"$SSH_CHECK_ERR"; then
     echo "  ERROR: Cannot SSH to $REMOTE_HOST"
-    echo "  Make sure you have SSH key access. Run: ssh-copy-id $REMOTE_HOST"
+    if [ -s "$SSH_CHECK_ERR" ]; then
+        sed 's/^/  SSH says: /' "$SSH_CHECK_ERR"
+    fi
+    if [ -n "$SSH_KEY" ]; then
+        echo "  Checked with key: $SSH_KEY"
+    fi
+    SSH_EXAMPLE_CMD="ssh "
+    if [ -n "$SSH_KEY" ]; then
+        SSH_EXAMPLE_CMD="${SSH_EXAMPLE_CMD}-i $SSH_KEY "
+    fi
+    if [ "$SSH_PORT" != "22" ]; then
+        SSH_EXAMPLE_CMD="${SSH_EXAMPLE_CMD}-p $SSH_PORT "
+    fi
+    SSH_EXAMPLE_CMD="${SSH_EXAMPLE_CMD}$REMOTE_HOST"
+    echo "  Make sure the configured SSH options are correct."
+    echo "  Example: $SSH_EXAMPLE_CMD"
+    rm -f "$SSH_CHECK_ERR"
     exit 1
 fi
+rm -f "$SSH_CHECK_ERR"
 echo "  SSH:     OK"
 
 # ===== Step 2: 安装本地 Bridge 依赖 =====
@@ -131,7 +179,7 @@ echo "[3/5] Deploying to cloud ($REMOTE_HOST)..."
 upload_cloud_setup
 
 # 安装 Claude Code
-ssh_remote bash << 'REMOTE_INSTALL'
+run_remote_bash_with_retry "Remote install" << 'REMOTE_INSTALL'
 set -e
 echo "  Installing system packages..."
 apt-get update -qq 2>/dev/null
@@ -165,7 +213,7 @@ su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins install docum
 REMOTE_INSTALL
 
 # 配置 Hook + MCP
-ssh_remote bash << REMOTE_CONFIG
+run_remote_bash_with_retry "Remote configuration" << REMOTE_CONFIG
 set -e
 
 # Hook + prepare-session（全局目录，root 部署）
@@ -213,7 +261,7 @@ else
 fi
 
 # 通过 SSH 隧道验证连通性
-HEALTH=$(ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
+HEALTH=$(ssh "${SSH_BASE_OPTS[@]}" "${SSH_PORT_FLAG[@]}" "${SSH_KEY_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
   "curl -s http://127.0.0.1:$BRIDGE_PORT/health 2>/dev/null" || echo "FAILED")
 
 if [ "$BRIDGE_STARTED_FOR_VERIFY" = "1" ]; then

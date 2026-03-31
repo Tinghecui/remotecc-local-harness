@@ -82,6 +82,7 @@ cp .remote-cc.env.example .remote-cc.env
 
 ```bash
 REMOTE_CC_HOST=root@your-vps-ip
+REMOTE_CC_SSH_KEY=~/.ssh/id_ed25519
 REMOTE_CC_PORT=3100
 REMOTE_CC_ROOTS=~/projects,~/Desktop
 MCP_HOST=127.0.0.1
@@ -175,6 +176,7 @@ remote-cc/
 | `REMOTE_CC_REMOTE_PORT_START` | `43000` | 云端会话专用反向端口的起始范围 |
 | `REMOTE_CC_REMOTE_PORT_END` | `48999` | 云端会话专用反向端口的结束范围 |
 | `REMOTE_CC_WORKSPACE_MODE` | `project` | `project` 复用同一项目 workspace，`session` 为每次连接创建独立 workspace |
+| `REMOTE_CC_SSH_KEY` | unset | 非默认 SSH key 的本地路径；`ccc setup` 会自动写入 |
 
 ### 自定义允许目录
 

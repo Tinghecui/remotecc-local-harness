@@ -26,6 +26,12 @@ echo ""
 
 # 检查云端连通性
 CLOUD_HOST="${1:-${REMOTE_CC_HOST:-}}"
+SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
+SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
+SSH_BASE_ARGS=(-p "$SSH_PORT")
+if [ -n "$SSH_KEY" ]; then
+    SSH_BASE_ARGS+=(-i "$SSH_KEY")
+fi
 if [ -z "$CLOUD_HOST" ]; then
     echo "Error: VPS host not specified."
     echo "Usage: ./scripts/status.sh <SSH_USER@HOST>"
@@ -39,9 +45,9 @@ if [[ "$CLOUD_HOST" != *@* ]]; then
 fi
 
 echo "[Cloud Server: $CLOUD_HOST]"
-if ssh -o ConnectTimeout=3 -o BatchMode=yes "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
+if ssh -o ConnectTimeout=10 -o BatchMode=yes "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "echo ok" > /dev/null 2>&1; then
     echo "  SSH:    OK"
-    CLAUDE_VERSION=$(ssh -o ConnectTimeout=3 "$CLOUD_HOST" "export PATH=\$HOME/.local/bin:\$PATH && claude --version" 2>/dev/null)
+    CLAUDE_VERSION=$(ssh -o ConnectTimeout=10 "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "export PATH=\$HOME/.local/bin:\$PATH && claude --version" 2>/dev/null)
     if [ -n "$CLAUDE_VERSION" ]; then
         echo "  Claude: $CLAUDE_VERSION"
     else

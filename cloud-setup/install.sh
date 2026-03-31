@@ -17,6 +17,31 @@ ssh_remote() {
     ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$@"
 }
 
+run_remote_bash_with_retry() {
+    local label="$1"
+    local attempt=1
+    local max_attempts=3
+    local script
+
+    script=$(cat)
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if [ "$attempt" -gt 1 ]; then
+            echo "  ${label}: retry $attempt/$max_attempts..."
+            sleep 2
+        fi
+
+        if printf '%s' "$script" | ssh_remote bash; then
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    echo "  ERROR: ${label} failed after $max_attempts attempts"
+    return 1
+}
+
 upload_cloud_setup() {
     local attempt=1
     local max_attempts=3
@@ -55,7 +80,7 @@ upload_cloud_setup
 
 # ---- 远程安装 ----
 echo "[2/4] Installing on remote..."
-ssh_remote bash << 'INSTALL_EOF'
+run_remote_bash_with_retry "Remote install" << 'INSTALL_EOF'
 set -e
 
 # 系统依赖
@@ -86,7 +111,7 @@ INSTALL_EOF
 
 # ---- 配置 ----
 echo "[3/4] Configuring..."
-ssh_remote bash << CONF_EOF
+run_remote_bash_with_retry "Remote configuration" << CONF_EOF
 set -e
 
 # Hook 脚本 + prepare-session（全局目录，root 部署）
@@ -116,7 +141,7 @@ CONF_EOF
 
 # ---- 验证 ----
 echo "[4/4] Verifying..."
-ssh_remote bash << 'VERIFY_EOF'
+run_remote_bash_with_retry "Remote verification" << 'VERIFY_EOF'
 CC_HOME=$(eval echo ~cc)
 echo "  Claude:   $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
 echo "  Hook:     $(test -x /opt/remote-cc/hooks/block-builtin.sh && echo 'OK' || echo 'MISSING')"
