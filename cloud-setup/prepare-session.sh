@@ -10,8 +10,10 @@
 #   local-settings-project.json     → merge into ~/workspace/<workspace>/.claude/settings.json
 #   local-skills-user/              → ~/.claude/skills/
 #   local-commands-user/            → ~/.claude/commands/
+#   local-agents-user/              → ~/.claude/agents/
 #   local-skills-project/           → ~/workspace/<workspace>/.claude/skills/
 #   local-commands-project/         → ~/workspace/<workspace>/.claude/commands/
+#   local-agents-project/           → ~/workspace/<workspace>/.claude/agents/
 #   local-sse-mcps.json             → ~/workspace/<workspace>/.mcp.json
 #
 # 环境变量:
@@ -47,10 +49,12 @@ SESSION_SETTINGS_USER="$(session_file "local-settings-user.json")"
 SESSION_SETTINGS_LOCAL_USER="$(session_file "local-settings-local-user.json")"
 SESSION_SKILLS_USER="$(session_file "local-skills-user")"
 SESSION_COMMANDS_USER="$(session_file "local-commands-user")"
+SESSION_AGENTS_USER="$(session_file "local-agents-user")"
 SESSION_SETTINGS_PROJECT="$(session_file "local-settings-project.json")"
 SESSION_SETTINGS_LOCAL_PROJECT="$(session_file "local-settings-local-project.json")"
 SESSION_SKILLS_PROJECT="$(session_file "local-skills-project")"
 SESSION_COMMANDS_PROJECT="$(session_file "local-commands-project")"
+SESSION_AGENTS_PROJECT="$(session_file "local-agents-project")"
 SESSION_SSE_MCP_LIST="$(session_file "local-sse-mcps.json")"
 SESSION_MEMORY_PID_FILE="$(session_file "memory-sync.pid")"
 SESSION_MEMORY_LOG="$(session_file "memory-sync.log")"
@@ -193,6 +197,14 @@ if [ -d "$SESSION_COMMANDS_USER" ]; then
     echo "  User commands: synced"
 fi
 
+# 用户级 agents
+if [ -d "$SESSION_AGENTS_USER" ]; then
+    mkdir -p "$HOME/.claude/agents"
+    cp -r "$SESSION_AGENTS_USER"/* "$HOME/.claude/agents/" 2>/dev/null
+    rm -rf "$SESSION_AGENTS_USER"
+    echo "  User agents: synced"
+fi
+
 # ============================================================
 # 4. 项目级配置同步
 # ============================================================
@@ -217,6 +229,14 @@ if [ -d "$SESSION_COMMANDS_PROJECT" ]; then
     cp -r "$SESSION_COMMANDS_PROJECT"/* "$WORKSPACE/.claude/commands/" 2>/dev/null
     rm -rf "$SESSION_COMMANDS_PROJECT"
     echo "  Project commands: synced"
+fi
+
+# 项目级 agents
+if [ -d "$SESSION_AGENTS_PROJECT" ]; then
+    mkdir -p "$WORKSPACE/.claude/agents"
+    cp -r "$SESSION_AGENTS_PROJECT"/* "$WORKSPACE/.claude/agents/" 2>/dev/null
+    rm -rf "$SESSION_AGENTS_PROJECT"
+    echo "  Project agents: synced"
 fi
 
 # ============================================================

@@ -220,10 +220,34 @@ upload_dir_if_exists() {
     local src="$1"
     local dest_name="$2"
     local label="$3"
+    local stage_dir
+    local had_entries=0
+    local entry
+    local base_name
 
     if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
         [ -n "$label" ] && echo "  $label"
-        scp_remote -r "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        stage_dir=$(mktemp -d "/tmp/remote-cc-upload.XXXXXX")
+
+        for entry in "$src"/*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+
+            # 跳过 broken symlinks
+            if [ -L "$entry" ] && [ ! -e "$entry" ]; then
+                echo "  WARNING: Skipping broken symlink: $entry"
+                continue
+            fi
+
+            base_name="$(basename "$entry")"
+            cp -R -L "$entry" "$stage_dir/$base_name"
+            had_entries=1
+        done
+
+        if [ "$had_entries" -eq 1 ]; then
+            scp_remote -r "$stage_dir" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+        fi
+
+        rm -rf "$stage_dir"
     fi
 }
 
@@ -467,6 +491,8 @@ upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-pro
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" ""
+upload_dir_if_exists "$HOME/.claude/agents" "local-agents-user" ""
+upload_dir_if_exists "$LOCAL_WORKDIR/.claude/agents" "local-agents-project" ""
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
@@ -491,7 +517,7 @@ fi
 
 # 上传的文件 owner 是 root，需要 chown 给 cc 用户
 # 然后以 cc 用户运行 prepare-session + claude（避免 root 限制）
-REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT=\"$REMOTE_BRIDGE_PORT\" && export REMOTE_CC_LOCAL_DIR=\"\$(printf \"%s\" \"$LOCAL_WORKDIR_B64\" | base64 -d)\" && export REMOTE_CC_SESSION_ID=\"$SESSION_ID\" && export REMOTE_CC_SESSION_TMP=\"$REMOTE_SESSION_DIR\" && export REMOTE_CC_WORKSPACE_NAME=\"$WORKSPACE_NAME\" && /opt/remote-cc/prepare-session.sh && cd ~/workspace/$WORKSPACE_NAME && $CLAUDE_CMD'"
+REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HOME/.local/bin:\$PATH && claude mcp remove local-bridge >/dev/null 2>&1 || true && export BRIDGE_PORT=\"$REMOTE_BRIDGE_PORT\" && export REMOTE_CC_LOCAL_DIR=\"\$(printf \"%s\" \"$LOCAL_WORKDIR_B64\" | base64 -d)\" && export REMOTE_CC_SESSION_ID=\"$SESSION_ID\" && export REMOTE_CC_SESSION_TMP=\"$REMOTE_SESSION_DIR\" && export REMOTE_CC_WORKSPACE_NAME=\"$WORKSPACE_NAME\" && /opt/remote-cc/prepare-session.sh && cd ~/workspace/$WORKSPACE_NAME && $CLAUDE_CMD'"
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \
