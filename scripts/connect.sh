@@ -46,6 +46,23 @@ if [ -z "$CLOUD_HOST" ]; then
     exit 1
 fi
 
+REMOTE_USER="${CLOUD_HOST%@*}"
+if [ "$REMOTE_USER" = "$CLOUD_HOST" ]; then
+    REMOTE_USER=""
+fi
+
+if [ "$REMOTE_USER" = "root" ] && [ ${#CLAUDE_EXTRA_ARGS[@]} -gt 0 ]; then
+    FILTERED_CLAUDE_ARGS=()
+    for _carg in "${CLAUDE_EXTRA_ARGS[@]}"; do
+        if [ "$_carg" = "--dangerously-skip-permissions" ]; then
+            echo "WARNING: Ignoring --dangerously-skip-permissions for root SSH sessions."
+            continue
+        fi
+        FILTERED_CLAUDE_ARGS+=("$_carg")
+    done
+    CLAUDE_EXTRA_ARGS=("${FILTERED_CLAUDE_ARGS[@]}")
+fi
+
 if [ "$REMOTE_PORT_START" -gt "$REMOTE_PORT_END" ] 2>/dev/null; then
     echo "Error: REMOTE_CC_REMOTE_PORT_START must be <= REMOTE_CC_REMOTE_PORT_END."
     exit 1
@@ -307,6 +324,61 @@ upload_dir_if_exists "$HOME/.claude/commands" "local-commands-user" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-project.json" ""
 upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" ""
+
+# 上传 skills + agents（tar 管道，排除非必需大文件 + resolve symlinks）
+# 编辑此 blacklist 可控制哪些 skills 不同步到云端
+SKILLS_BLACKLIST="last30days adapt animate arrange bolder clarify colorize critique delight distill extract normalize onboard optimize overdrive polish quieter typeset teach-impeccable buying-signals-6 campaign-sending clay-buying-signals-5 clay-enrichment-9step coldiq-messaging-templates email-generation email-prompt-building email-response-simulation email-verification hypothesis-building inbound-triggers-30 inbox-reply lead-sources-guide linkedin-limits-warmup list-segmentation market-research outbound-triggers-6 outreach-4-categories personalization-6-buckets personalization-playbooks sdr-master-prompts ai-personalization-prompts gtm-plays-11"
+
+upload_dir_tar() {
+    local src="$1"
+    local dest_name="$2"
+    local label="$3"
+    local blacklist="${4:-}"
+
+    if [ ! -d "$src" ] || [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+        return
+    fi
+
+    [ -n "$label" ] && echo "  $label"
+    local stage_path
+    stage_path="$(remote_stage_path "$dest_name")"
+    ssh -p "$SSH_PORT" "$CLOUD_HOST" "mkdir -p '$stage_path'"
+
+    # 构建 tar exclude 参数
+    local TAR_EXCLUDES=(
+        --exclude='.git'
+        --exclude='assets'
+        --exclude='vendor'
+        --exclude='docs'
+        --exclude='tests'
+        --exclude='scripts'
+        --exclude='node_modules'
+        --exclude='plans'
+        --exclude='*.png'
+        --exclude='*.jpg'
+        --exclude='*.gif'
+        --exclude='*.svg'
+        --exclude='CHANGELOG.md'
+        --exclude='README.md'
+    )
+
+    # 加入 blacklist 排除
+    if [ -n "$blacklist" ]; then
+        for item in $blacklist; do
+            TAR_EXCLUDES+=(--exclude="./$item")
+        done
+    fi
+
+    tar cf - -L "${TAR_EXCLUDES[@]}" -C "$src" . 2>/dev/null \
+        | ssh -p "$SSH_PORT" "$CLOUD_HOST" "tar xf - -C '$stage_path'"
+}
+
+upload_dir_tar "$HOME/.claude/skills" "local-skills-user" \
+    "Syncing user skills (tar)..." "$SKILLS_BLACKLIST"
+upload_dir_tar "$HOME/.claude/agents" "local-agents-user" \
+    "Syncing user agents (tar)..."
+upload_dir_tar "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
+upload_dir_tar "$LOCAL_WORKDIR/.claude/agents" "local-agents-project" ""
 
 # 上传本会话专属的 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
