@@ -259,9 +259,28 @@ for path in glob.glob(os.path.join(workspace_root, '*')):
     except OSError:
         continue
 
+def rename_to_stable(best):
+    """Rename workspace and its claude project dir to stable name."""
+    if best == stable_name:
+        return
+    old_path = os.path.join(workspace_root, best)
+    new_path = os.path.join(workspace_root, stable_name)
+    if os.path.exists(new_path):
+        return
+    os.rename(old_path, new_path)
+    projects_dir = os.path.expanduser('~/.claude/projects')
+    old_key = '-root-workspace-' + best
+    new_key = '-root-workspace-' + stable_name
+    old_proj = os.path.join(projects_dir, old_key)
+    new_proj = os.path.join(projects_dir, new_key)
+    if os.path.isdir(old_proj) and not os.path.isdir(new_proj):
+        os.rename(old_proj, new_proj)
+
 if matches:
     matches.sort()
-    print(matches[-1][1])
+    best = matches[-1][1]
+    rename_to_stable(best)
+    print(stable_name)
     raise SystemExit
 
 legacy = []
@@ -272,7 +291,9 @@ for path in glob.glob(os.path.join(workspace_root, prefix + '*')):
 
 if legacy:
     legacy.sort()
-    print(legacy[-1][1])
+    best = legacy[-1][1]
+    rename_to_stable(best)
+    print(stable_name)
 else:
     print(stable_name)
 PY
@@ -353,8 +374,8 @@ echo ""
 echo "Connecting... (Ctrl+D or /exit to quit)"
 echo ""
 
-# 准备云端会话暂存目录
-ssh -p "$SSH_PORT" "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR'" || exit 1
+# 准备云端会话暂存目录（root 创建，chown 给 cc 用户）
+ssh -p "$SSH_PORT" "$CLOUD_HOST" "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR' && chown cc:cc '$REMOTE_SESSION_DIR'" || exit 1
 
 # 上传本地 CLAUDE.md 文件（用户级 + 项目级）
 upload_file_if_exists "$HOME/.claude/CLAUDE.md" "local-claude-user.md" "Uploading user-level CLAUDE.md..."

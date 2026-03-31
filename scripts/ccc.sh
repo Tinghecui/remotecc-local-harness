@@ -37,11 +37,35 @@ ENV_FILE="$PROJECT_DIR/.remote-cc.env"
 SUBCOMMAND=""
 SSH_HOST_OVERRIDE=""
 CLAUDE_ARGS=()
+EXPECT_SESSION_ID=""
 
 for arg in "$@"; do
+    # If previous arg was "resume", check if this is a session ID
+    if [ -n "$EXPECT_SESSION_ID" ]; then
+        case "$arg" in
+            setup|status|help|update|resume|continue|c|-d|--*)
+                # Not a session ID; emit bare --resume and re-process
+                CLAUDE_ARGS+=("--resume")
+                EXPECT_SESSION_ID=""
+                ;;
+            *)
+                # Treat as session ID
+                CLAUDE_ARGS+=("--resume=$arg")
+                EXPECT_SESSION_ID=""
+                continue
+                ;;
+        esac
+    fi
+
     case "$arg" in
         setup|status|help|update)
             SUBCOMMAND="$arg"
+            ;;
+        resume)
+            EXPECT_SESSION_ID=1
+            ;;
+        continue|c)
+            CLAUDE_ARGS+=("--continue")
             ;;
         -d)
             CLAUDE_ARGS+=("--dangerously-skip-permissions")
@@ -65,6 +89,11 @@ for arg in "$@"; do
     esac
 done
 
+# Handle trailing "resume" with no session ID
+if [ -n "$EXPECT_SESSION_ID" ]; then
+    CLAUDE_ARGS+=("--resume")
+fi
+
 # ── 子命令路由 ────────────────────────────────────────────
 
 case "$SUBCOMMAND" in
@@ -73,6 +102,9 @@ case "$SUBCOMMAND" in
         echo ""
         echo "Usage:"
         echo "  ccc                     Start remote session (auto bridge + connect)"
+        echo "  ccc continue (or c)     Resume last session in this project"
+        echo "  ccc resume              Open session picker on VPS"
+        echo "  ccc resume <session-id> Resume a specific session"
         echo "  ccc setup               Interactive first-time setup wizard"
         echo "  ccc update              Update to latest version + redeploy VPS"
         echo "  ccc status              Check bridge & VPS status"
