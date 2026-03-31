@@ -205,7 +205,10 @@ MCP_PORT=4100 ./scripts/start-bridge.sh
 | `~/.claude/settings.local.json` | 权限设置，按 allow/deny 并集合并 |
 | `~/.claude/skills/` | 用户级 skills |
 | `~/.claude/commands/` | 用户级 commands |
+| `~/.claude/agents/` | 用户级 agents |
 | `项目/.claude/skills/` | 项目级 skills |
+| `项目/.claude/commands/` | 项目级 commands |
+| `项目/.claude/agents/` | 项目级 agents |
 
 ## 安全模型
 
