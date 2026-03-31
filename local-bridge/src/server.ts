@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readFile, writeFile, stat, mkdir } from "fs/promises";
+import { readFile, writeFile, mkdir } from "fs/promises";
+import { createReadStream } from "fs";
 import { spawn } from "child_process";
 import { dirname, extname } from "path";
+import { createInterface } from "readline";
 import fg from "fast-glob";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -80,14 +82,31 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         }
       }
 
-      // Text files: existing behavior
+      // Text files: stream when using offset/limit to avoid reading entire file
+      const start = offset ?? 0;
+      if (start > 0 || limit) {
+        const maxLines = limit ?? 2000;
+        const result: string[] = [];
+        let lineNum = 0;
+        const rl = createInterface({
+          input: createReadStream(safe, { encoding: "utf-8" }),
+          crlfDelay: Infinity,
+        });
+        for await (const line of rl) {
+          if (lineNum >= start + maxLines) { rl.close(); break; }
+          if (lineNum >= start) {
+            result.push(`${lineNum + 1}\t${line}`);
+          }
+          lineNum++;
+        }
+        return { content: [{ type: "text" as const, text: result.join("\n") }] };
+      }
+
+      // Full read (no offset/limit)
       const content = await readFile(safe, "utf-8");
       const lines = content.split("\n");
-      const start = offset ?? 0;
-      const end = limit ? start + limit : lines.length;
-      const sliced = lines.slice(start, end);
-      const numbered = sliced
-        .map((line, i) => `${start + i + 1}\t${line}`)
+      const numbered = lines
+        .map((line, i) => `${i + 1}\t${line}`)
         .join("\n");
       return { content: [{ type: "text" as const, text: numbered }] };
     }
@@ -234,26 +253,39 @@ export function createMcpServer(config: BridgeConfig): McpServer {
           env: { ...process.env },
         });
 
-        let stdout = "";
-        let stderr = "";
+        const stdoutChunks: Buffer[] = [];
+        const stderrChunks: Buffer[] = [];
+        let stdoutLen = 0;
+        let stderrLen = 0;
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
 
         proc.stdout.on("data", (d: Buffer) => {
-          stdout += d.toString();
-          // 限制输出大小，防止 OOM
-          if (stdout.length > 1024 * 1024) {
+          if (stdoutTruncated) return;
+          stdoutLen += d.length;
+          if (stdoutLen > 1024 * 1024) {
             proc.kill();
-            stdout = stdout.slice(0, 1024 * 1024) + "\n... [output truncated at 1MB]";
+            stdoutTruncated = true;
+            return;
           }
+          stdoutChunks.push(d);
         });
 
         proc.stderr.on("data", (d: Buffer) => {
-          stderr += d.toString();
-          if (stderr.length > 512 * 1024) {
-            stderr = stderr.slice(0, 512 * 1024) + "\n... [stderr truncated at 512KB]";
+          if (stderrTruncated) return;
+          stderrLen += d.length;
+          if (stderrLen > 512 * 1024) {
+            stderrTruncated = true;
+            return;
           }
+          stderrChunks.push(d);
         });
 
         proc.on("close", (code) => {
+          let stdout = Buffer.concat(stdoutChunks).toString();
+          if (stdoutTruncated) stdout += "\n... [output truncated at 1MB]";
+          let stderr = Buffer.concat(stderrChunks).toString();
+          if (stderrTruncated) stderr += "\n... [stderr truncated at 512KB]";
           resolve({
             content: [
               {
@@ -269,6 +301,7 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         });
 
         proc.on("error", (err) => {
+          const stdout = Buffer.concat(stdoutChunks).toString();
           resolve({
             content: [
               {
@@ -315,26 +348,20 @@ export function createMcpServer(config: BridgeConfig): McpServer {
         stats: true,
       });
 
-      // 验证所有结果都在允许范围内
-      const safeFiles = files.filter((f) =>
-        config.allowedRoots.some((root) => isPathInside(root, typeof f === "string" ? f : f.path))
-      );
+      // 验证所有结果都在允许范围内，直接使用 fast-glob 提供的 stats
+      const safeFiles = (files as fg.Entry[])
+        .filter((f) =>
+          config.allowedRoots.some((root) => isPathInside(root, f.path))
+        )
+        .map((f) => ({
+          path: f.path,
+          mtime: f.stats?.mtimeMs ?? 0,
+        }));
 
       // Sort by modification time (newest first)
-      const withStats = await Promise.all(
-        safeFiles.map(async (f) => {
-          const filePath = typeof f === "string" ? f : f.path;
-          try {
-            const s = await stat(filePath);
-            return { path: filePath, mtime: s.mtimeMs };
-          } catch {
-            return { path: filePath, mtime: 0 };
-          }
-        })
-      );
-      withStats.sort((a, b) => b.mtime - a.mtime);
+      safeFiles.sort((a, b) => b.mtime - a.mtime);
 
-      const limited = withStats.slice(0, limit).map((f) => f.path);
+      const limited = safeFiles.slice(0, limit).map((f) => f.path);
 
       return {
         content: [

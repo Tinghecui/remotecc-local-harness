@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { readdir, readFile, writeFile, stat, mkdir, utimes } from "fs/promises";
 import { join } from "path";
@@ -10,7 +11,9 @@ import { isPathInside, resolvePath } from "./security.js";
 const config = loadConfig();
 
 const app = express();
-app.use(express.json());
+// gzip 压缩所有响应 — 通过 SSH 隧道传输时显著减少数据量
+app.use(compression({ threshold: 512 }));
+app.use(express.json({ limit: "10mb" }));
 
 // OAuth 探测 - 告诉客户端不需要认证
 app.get("/.well-known/oauth-authorization-server", (_req, res) => {
@@ -61,16 +64,16 @@ app.get("/sync/memory", async (req, res) => {
     }
 
     const entries = await readdir(resolved);
-    const files: Array<{ name: string; content: string; mtime: number }> = [];
-
-    for (const entry of entries) {
-      const filePath = join(resolved, entry);
-      const fileStat = await stat(filePath);
-      if (fileStat.isFile()) {
+    const results = await Promise.all(
+      entries.map(async (entry) => {
+        const filePath = join(resolved, entry);
+        const fileStat = await stat(filePath);
+        if (!fileStat.isFile()) return null;
         const content = await readFile(filePath, "utf-8");
-        files.push({ name: entry, content, mtime: fileStat.mtimeMs });
-      }
-    }
+        return { name: entry, content, mtime: fileStat.mtimeMs };
+      })
+    );
+    const files = results.filter((f): f is NonNullable<typeof f> => f !== null);
 
     res.json({ files });
   } catch (err: unknown) {
@@ -99,17 +102,19 @@ app.post("/sync/memory", async (req, res) => {
       return;
     }
 
-    let written = 0;
-    for (const file of files) {
-      const filePath = join(resolved, file.name);
-      if (!isPathInside(resolved, filePath)) continue; // 防目录遍历
-      await writeFile(filePath, file.content);
-      if (file.mtime) {
-        const mtime = new Date(file.mtime);
-        await utimes(filePath, mtime, mtime);
-      }
-      written++;
-    }
+    const writeResults = await Promise.all(
+      files.map(async (file) => {
+        const filePath = join(resolved, file.name);
+        if (!isPathInside(resolved, filePath)) return false; // 防目录遍历
+        await writeFile(filePath, file.content);
+        if (file.mtime) {
+          const mtime = new Date(file.mtime);
+          await utimes(filePath, mtime, mtime);
+        }
+        return true;
+      })
+    );
+    const written = writeResults.filter(Boolean).length;
 
     res.json({ ok: true, written });
   } catch (err: unknown) {

@@ -157,57 +157,6 @@ hash_string() {
     fi
 }
 
-remote_stage_path() {
-    printf '%s/%s' "$REMOTE_SESSION_DIR" "$1"
-}
-
-upload_file_if_exists() {
-    local src="$1"
-    local dest_name="$2"
-    local label="$3"
-
-    if [ -f "$src" ]; then
-        [ -n "$label" ] && echo "  $label"
-        scp_remote "$src" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
-    fi
-}
-
-upload_dir_if_exists() {
-    local src="$1"
-    local dest_name="$2"
-    local label="$3"
-    local stage_dir
-    local had_entries=0
-    local entry
-    local base_name
-
-    if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
-        [ -n "$label" ] && echo "  $label"
-        stage_dir=$(mktemp -d "/tmp/remote-cc-upload.XXXXXX")
-
-        for entry in "$src"/*; do
-            [ -e "$entry" ] || [ -L "$entry" ] || continue
-
-            # 跳过 broken symlinks
-            if [ -L "$entry" ] && [ ! -e "$entry" ]; then
-                echo "  WARNING: Skipping broken symlink: $entry"
-                continue
-            fi
-
-            base_name="$(basename "$entry")"
-            cp -R -L "$entry" "$stage_dir/$base_name"
-            had_entries=1
-        done
-
-        if [ "$had_entries" -eq 1 ]; then
-            ssh "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "mkdir -p '$(remote_stage_path "$dest_name")'"
-            scp_remote -r "$stage_dir"/* "$CLOUD_HOST:$(remote_stage_path "$dest_name")/"
-        fi
-
-        rm -rf "$stage_dir"
-    fi
-}
-
 SESSION_ID="${REMOTE_CC_SESSION_ID:-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM}"
 PROJECT_SLUG="$(slugify "$(basename "$LOCAL_WORKDIR")")"
 PROJECT_HASH="$(hash_string "$LOCAL_WORKDIR" | cut -c1-12)"
@@ -351,28 +300,68 @@ echo ""
 # 准备云端会话暂存目录（root 创建，chown 给 cc 用户）
 ssh_remote "rm -rf '$REMOTE_SESSION_DIR' && mkdir -p '$REMOTE_SESSION_DIR' && chown cc:cc '$REMOTE_SESSION_DIR'" || exit 1
 
-# 上传本地 CLAUDE.md 文件（用户级 + 项目级）
-upload_file_if_exists "$HOME/.claude/CLAUDE.md" "local-claude-user.md" "Uploading user-level CLAUDE.md..."
-upload_file_if_exists "$LOCAL_WORKDIR/CLAUDE.md" "local-claude-project.md" "Uploading project-level CLAUDE.md..."
+# ── 增量同步：收集 → hash → 跳过或打包上传 ──
+CONFIG_CACHE_DIR="/tmp/remote-cc-config-cache-${WORKSPACE_NAME}"
+SYNC_STAGE=$(mktemp -d "/tmp/remote-cc-sync-stage.XXXXXX")
 
-# 上传配置文件（settings、skills、commands）
-echo "  Syncing config..."
-upload_file_if_exists "$HOME/.claude/settings.json" "local-settings-user.json" ""
-upload_file_if_exists "$HOME/.claude/settings.local.json" "local-settings-local-user.json" ""
-upload_dir_if_exists "$HOME/.claude/skills" "local-skills-user" ""
-upload_dir_if_exists "$HOME/.claude/commands" "local-commands-user" ""
-upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-project.json" ""
-upload_file_if_exists "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json" ""
-upload_dir_if_exists "$LOCAL_WORKDIR/.claude/skills" "local-skills-project" ""
-upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" ""
-upload_dir_if_exists "$HOME/.claude/agents" "local-agents-user" ""
-upload_dir_if_exists "$LOCAL_WORKDIR/.claude/agents" "local-agents-project" ""
+collect_file() {
+    local src="$1" dest="$2"
+    [ -f "$src" ] && cp "$src" "$SYNC_STAGE/$dest"
+}
 
-# 上传 SSE MCP 列表
+collect_dir() {
+    local src="$1" dest="$2"
+    if [ -d "$src" ] && [ "$(ls -A "$src" 2>/dev/null)" ]; then
+        mkdir -p "$SYNC_STAGE/$dest"
+        for entry in "$src"/*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            # 跳过 broken symlinks
+            if [ -L "$entry" ] && [ ! -e "$entry" ]; then continue; fi
+            cp -R -L "$entry" "$SYNC_STAGE/$dest/"
+        done
+    fi
+}
+
+# 收集所有配置文件
+collect_file "$HOME/.claude/CLAUDE.md" "local-claude-user.md"
+collect_file "$LOCAL_WORKDIR/CLAUDE.md" "local-claude-project.md"
+collect_file "$HOME/.claude/settings.json" "local-settings-user.json"
+collect_file "$HOME/.claude/settings.local.json" "local-settings-local-user.json"
+collect_dir  "$HOME/.claude/skills" "local-skills-user"
+collect_dir  "$HOME/.claude/commands" "local-commands-user"
+collect_dir  "$HOME/.claude/agents" "local-agents-user"
+collect_file "$LOCAL_WORKDIR/.claude/settings.json" "local-settings-project.json"
+collect_file "$LOCAL_WORKDIR/.claude/settings.local.json" "local-settings-local-project.json"
+collect_dir  "$LOCAL_WORKDIR/.claude/skills" "local-skills-project"
+collect_dir  "$LOCAL_WORKDIR/.claude/commands" "local-commands-project"
+collect_dir  "$LOCAL_WORKDIR/.claude/agents" "local-agents-project"
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
-    printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh_remote "cat > '$(remote_stage_path "local-sse-mcps.json")'"
-    echo "  Project MCP list: uploaded"
+    printf '%s\n' "$REMOTE_SSE_MCP_LIST" > "$SYNC_STAGE/local-sse-mcps.json"
 fi
+
+# 计算内容 hash
+SYNC_HASH_KEY=$(printf '%s-%s' "$CLOUD_HOST" "$LOCAL_WORKDIR" | shasum -a 256 2>/dev/null | cut -c1-16)
+SYNC_MANIFEST="/tmp/remote-cc-sync-${SYNC_HASH_KEY}.manifest"
+CURRENT_HASH=$(find "$SYNC_STAGE" -type f -exec shasum {} + 2>/dev/null | LC_ALL=C sort | shasum -a 256 | cut -c1-64)
+CACHED_HASH=$(cat "$SYNC_MANIFEST" 2>/dev/null || echo "")
+
+if [ "$CURRENT_HASH" = "$CACHED_HASH" ]; then
+    # 配置未变 — 从云端持久缓存复制到本次会话目录（本地 cp，毫秒级）
+    ssh_remote "if [ -d '$CONFIG_CACHE_DIR' ]; then cp -a '$CONFIG_CACHE_DIR'/. '$REMOTE_SESSION_DIR/' && chown -R cc:cc '$REMOTE_SESSION_DIR'; else mkdir -p '$CONFIG_CACHE_DIR'; fi"
+    echo "  Config unchanged, using cloud cache"
+else
+    # 配置有变 — 打包一次上传（1 scp 替代 ~12 次）
+    SYNC_TAR="${SYNC_STAGE}.tar.gz"
+    tar czf "$SYNC_TAR" -C "$SYNC_STAGE" .
+    SYNC_SIZE=$(du -sh "$SYNC_TAR" 2>/dev/null | cut -f1)
+    scp_remote "$SYNC_TAR" "$CLOUD_HOST:${REMOTE_SESSION_DIR}/sync-bundle.tar.gz"
+    ssh_remote "cd '$REMOTE_SESSION_DIR' && tar xzf sync-bundle.tar.gz && rm -f sync-bundle.tar.gz && rm -rf '$CONFIG_CACHE_DIR' && cp -a '$REMOTE_SESSION_DIR' '$CONFIG_CACHE_DIR' && chown -R cc:cc '$REMOTE_SESSION_DIR'"
+    printf '%s' "$CURRENT_HASH" > "$SYNC_MANIFEST"
+    echo "  Config synced (${SYNC_SIZE:-?} uploaded)"
+    rm -f "$SYNC_TAR"
+fi
+
+rm -rf "$SYNC_STAGE"
 
 # SSH 连接启动 claude（不再需要 -R 隧道参数）
 MAX_RETRIES=5
