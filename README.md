@@ -120,7 +120,13 @@ cd ~/my-project
 ./scripts/connect.sh
 ```
 
-如果你想并行多个 Claude 会话，重复第 2 步即可。`connect.sh` 会自动为每个会话创建独立的云端端口和 `~/workspace/<session>` 工作目录。
+如果你想重复进入同一个项目，`connect.sh` 默认会复用该项目的云端 workspace，这样 Claude 的 `-c` / `/resume` 更稳定。
+
+如果你想并行多个彼此隔离的 Claude 会话，可以临时切到独立 workspace 模式：
+
+```bash
+REMOTE_CC_WORKSPACE_MODE=session ./scripts/connect.sh
+```
 
 ## 项目结构
 
@@ -168,6 +174,7 @@ remote-cc/
 |------|--------|------|
 | `REMOTE_CC_REMOTE_PORT_START` | `43000` | 云端会话专用反向端口的起始范围 |
 | `REMOTE_CC_REMOTE_PORT_END` | `48999` | 云端会话专用反向端口的结束范围 |
+| `REMOTE_CC_WORKSPACE_MODE` | `project` | `project` 复用同一项目 workspace，`session` 为每次连接创建独立 workspace |
 
 ### 自定义允许目录
 

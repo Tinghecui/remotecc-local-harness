@@ -268,6 +268,9 @@ REMOTE_CC_PORT=$CONFIG_BRIDGE_PORT
 # 本地允许访问的目录
 REMOTE_CC_ROOTS=$CONFIG_ROOTS
 
+# 远端 workspace 模式（project = 复用同一项目 workspace，session = 每次独立）
+# REMOTE_CC_WORKSPACE_MODE=project
+
 # MCP Bridge 监听地址（建议保持 127.0.0.1）
 # MCP_HOST=127.0.0.1
 

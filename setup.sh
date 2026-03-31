@@ -158,19 +158,27 @@ echo ""
 echo "[4/5] Verifying..."
 
 # 启动本地 Bridge（后台临时验证）
-MCP_ALLOWED_ROOTS="$VERIFY_ROOTS" \
-MCP_HOST="127.0.0.1" \
-MCP_PORT="$BRIDGE_PORT" \
-npx tsx "$SCRIPT_DIR/local-bridge/src/index.ts" &
-BRIDGE_PID=$!
-sleep 3
+BRIDGE_STARTED_FOR_VERIFY=0
+if curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
+    echo "  Local bridge already running on port $BRIDGE_PORT"
+else
+    MCP_ALLOWED_ROOTS="$VERIFY_ROOTS" \
+    MCP_HOST="127.0.0.1" \
+    MCP_PORT="$BRIDGE_PORT" \
+    npx tsx "$SCRIPT_DIR/local-bridge/src/index.ts" &
+    BRIDGE_PID=$!
+    BRIDGE_STARTED_FOR_VERIFY=1
+    sleep 3
+fi
 
 # 通过 SSH 隧道验证连通性
 HEALTH=$(ssh "${SSH_PORT_FLAG[@]}" -R "$BRIDGE_PORT:localhost:$BRIDGE_PORT" "$REMOTE_HOST" \
   "curl -s http://127.0.0.1:$BRIDGE_PORT/health 2>/dev/null" || echo "FAILED")
 
-kill $BRIDGE_PID 2>/dev/null
-wait $BRIDGE_PID 2>/dev/null || true
+if [ "$BRIDGE_STARTED_FOR_VERIFY" = "1" ]; then
+    kill "$BRIDGE_PID" 2>/dev/null
+    wait "$BRIDGE_PID" 2>/dev/null || true
+fi
 
 if echo "$HEALTH" | grep -q '"status":"ok"'; then
     echo "  Tunnel:  OK"

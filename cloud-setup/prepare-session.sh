@@ -1,24 +1,24 @@
 #!/bin/bash
 # ============================================================
 # 每次 connect.sh 连接时在云端执行
-# 同步本地配置到云端，动态生成会话级 workspace / CLAUDE.md / .mcp.json
+# 同步本地配置到云端，动态生成 workspace / CLAUDE.md / .mcp.json
 #
 # 从 REMOTE_CC_SESSION_TMP 读取 connect.sh 上传的文件：
 #   local-claude-user.md            → ~/.claude/CLAUDE.md
-#   local-claude-project.md         → ~/workspace/<session>/CLAUDE.md
+#   local-claude-project.md         → ~/workspace/<workspace>/CLAUDE.md
 #   local-settings-user.json        → merge into ~/.claude/settings.json
-#   local-settings-project.json     → merge into ~/workspace/<session>/.claude/settings.json
+#   local-settings-project.json     → merge into ~/workspace/<workspace>/.claude/settings.json
 #   local-skills-user/              → ~/.claude/skills/
 #   local-commands-user/            → ~/.claude/commands/
-#   local-skills-project/           → ~/workspace/<session>/.claude/skills/
-#   local-commands-project/         → ~/workspace/<session>/.claude/commands/
-#   local-sse-mcps.json             → ~/workspace/<session>/.mcp.json
+#   local-skills-project/           → ~/workspace/<workspace>/.claude/skills/
+#   local-commands-project/         → ~/workspace/<workspace>/.claude/commands/
+#   local-sse-mcps.json             → ~/workspace/<workspace>/.mcp.json
 #
 # 环境变量:
 #   REMOTE_CC_LOCAL_DIR      — 本地工作目录路径
 #   REMOTE_CC_SESSION_ID     — connect.sh 生成的会话 ID
 #   REMOTE_CC_SESSION_TMP    — 本次会话的云端暂存目录
-#   REMOTE_CC_WORKSPACE_NAME — 会话级 workspace 目录名
+#   REMOTE_CC_WORKSPACE_NAME — 本次连接使用的 workspace 目录名
 #   BRIDGE_PORT              — 本会话反向隧道后的远端 bridge 端口
 # ============================================================
 
@@ -28,9 +28,14 @@ SESSION_TMP="${REMOTE_CC_SESSION_TMP:-/tmp/remote-cc-session}"
 WORKSPACE_NAME="${REMOTE_CC_WORKSPACE_NAME:-default}"
 WORKSPACE="$HOME/workspace/$WORKSPACE_NAME"
 BRIDGE_PORT="${BRIDGE_PORT:-3100}"
+WORKSPACE_LOCAL_DIR_MARKER="$WORKSPACE/.remote-cc-local-dir"
 
 mkdir -p "$SESSION_TMP"
 mkdir -p "$WORKSPACE"
+
+if [ "$LOCAL_DIR" != "unknown" ]; then
+    printf '%s\n' "$LOCAL_DIR" > "$WORKSPACE_LOCAL_DIR_MARKER"
+fi
 
 session_file() {
     printf '%s/%s' "$SESSION_TMP" "$1"

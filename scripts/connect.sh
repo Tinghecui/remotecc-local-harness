@@ -60,6 +60,19 @@ slugify() {
     printf '%s' "$value"
 }
 
+hash_string() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$1" | openssl dgst -sha256 | awk '{print $NF}'
+    else
+        echo "ERROR: Need shasum, sha256sum, or openssl to derive workspace identity." >&2
+        exit 1
+    fi
+}
+
 extract_port_from_url() {
     printf '%s' "$1" | sed -n 's|.*://[^:/]*:\([0-9][0-9]*\).*|\1|p'
 }
@@ -193,8 +206,80 @@ add_mcp_forward() {
 
 SESSION_ID="${REMOTE_CC_SESSION_ID:-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM}"
 PROJECT_SLUG="$(slugify "$(basename "$LOCAL_WORKDIR")")"
-WORKSPACE_NAME="${PROJECT_SLUG}-${SESSION_ID}"
+PROJECT_HASH="$(hash_string "$LOCAL_WORKDIR" | cut -c1-12)"
+WORKSPACE_MODE="${REMOTE_CC_WORKSPACE_MODE:-project}"
 REMOTE_SESSION_DIR="/tmp/remote-cc-sessions/$SESSION_ID"
+LOCAL_WORKDIR_B64=$(printf '%s' "$LOCAL_WORKDIR" | base64 | tr -d '\n')
+
+resolve_remote_workspace_name() {
+    case "$WORKSPACE_MODE" in
+        session|isolated)
+            printf '%s-%s' "$PROJECT_SLUG" "$SESSION_ID"
+            return 0
+            ;;
+        project|stable)
+            ;;
+        *)
+            echo "Error: REMOTE_CC_WORKSPACE_MODE must be 'project' or 'session'." >&2
+            exit 1
+            ;;
+    esac
+
+    ssh -p "$SSH_PORT" "$CLOUD_HOST" "
+        command -v python3 >/dev/null 2>&1 || {
+            printf '%s\n' '$PROJECT_SLUG-$PROJECT_HASH'
+            exit 0
+        }
+        python3 - <<'PY'
+import base64
+import glob
+import os
+
+local_dir = base64.b64decode('$LOCAL_WORKDIR_B64').decode('utf-8')
+project_slug = '$PROJECT_SLUG'
+project_hash = '$PROJECT_HASH'
+workspace_root = os.path.expanduser('~/workspace')
+stable_name = f'{project_slug}-{project_hash}'
+stable_path = os.path.join(workspace_root, stable_name)
+
+if os.path.isdir(stable_path):
+    print(stable_name)
+    raise SystemExit
+
+matches = []
+for path in glob.glob(os.path.join(workspace_root, '*')):
+    if not os.path.isdir(path):
+        continue
+    marker_path = os.path.join(path, '.remote-cc-local-dir')
+    try:
+        if os.path.isfile(marker_path):
+            with open(marker_path, encoding='utf-8') as handle:
+                if handle.read().strip() == local_dir:
+                    matches.append((os.path.getmtime(path), os.path.basename(path)))
+    except OSError:
+        continue
+
+if matches:
+    matches.sort()
+    print(matches[-1][1])
+    raise SystemExit
+
+legacy = []
+prefix = project_slug + '-'
+for path in glob.glob(os.path.join(workspace_root, prefix + '*')):
+    if os.path.isdir(path):
+        legacy.append((os.path.getmtime(path), os.path.basename(path)))
+
+if legacy:
+    legacy.sort()
+    print(legacy[-1][1])
+else:
+    print(stable_name)
+PY
+    "
+}
+
+WORKSPACE_NAME="$(resolve_remote_workspace_name)"
 REMOTE_WORKSPACE="~/workspace/$WORKSPACE_NAME"
 
 echo "========================================="
@@ -203,6 +288,7 @@ echo "========================================="
 echo "  Cloud:            $CLOUD_HOST"
 echo "  Local Bridge:     localhost:$BRIDGE_PORT"
 echo "  Local Workdir:    $LOCAL_WORKDIR"
+echo "  Workspace Mode:   $WORKSPACE_MODE"
 echo "  Session:          $SESSION_ID"
 echo "  Remote Workspace: $REMOTE_WORKSPACE"
 echo ""
@@ -218,7 +304,7 @@ EXISTING_TUNNELS=$(ps -axo pid=,command= | awk -v host="$CLOUD_HOST" '
 ')
 if [ -n "$EXISTING_TUNNELS" ]; then
     echo "  Note: Found existing Remote CC session(s) for $CLOUD_HOST."
-    echo "        This session will use isolated remote ports and workspace."
+    echo "        This session will use isolated remote ports."
     echo ""
 fi
 
@@ -237,8 +323,6 @@ fi
 REMOTE_BRIDGE_PORT=$(allocate_remote_port) || exit 1
 SSH_FORWARD_ARGS+=(-R "$REMOTE_BRIDGE_PORT:localhost:$BRIDGE_PORT")
 echo "  Remote Bridge:    localhost:$REMOTE_BRIDGE_PORT → local:$BRIDGE_PORT"
-
-LOCAL_WORKDIR_B64=$(printf '%s' "$LOCAL_WORKDIR" | base64 | tr -d '\n')
 
 # ============================================================
 # 检测本地 SSE 类型 MCP 服务器，自动添加隧道
