@@ -47,15 +47,72 @@ if [ -n "$SSH_KEY" ]; then
 fi
 
 ssh_remote() {
-    ssh "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
+    local attempt=1
+    local max_attempts=3
+    local rc
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        ssh "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return "$rc"
 }
 
 ssh_remote_quick() {
     ssh -o ConnectTimeout=10 "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
 }
 
+ssh_remote_quick_status() {
+    local attempt=1
+    local max_attempts=3
+    local rc
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        ssh_remote_quick "$@"
+        rc=$?
+        case "$rc" in
+            0|1)
+                return "$rc"
+                ;;
+        esac
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return "$rc"
+}
+
 scp_remote() {
-    scp -q "${SCP_BASE_ARGS[@]}" "$@"
+    local attempt=1
+    local max_attempts=3
+    local rc
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        scp -q "${SCP_BASE_ARGS[@]}" "$@"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return "$rc"
 }
 
 if [ -z "$CLOUD_HOST" ]; then
@@ -117,7 +174,7 @@ allocate_remote_port() {
             *":$port:"*) continue ;;
         esac
 
-        ssh_remote_quick "
+        ssh_remote_quick_status "
             PORT='$port'
             if (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print \$4}' | grep -Eq '(^|[.:])'\$PORT'$'; then
                 exit 0
@@ -279,7 +336,7 @@ for path in glob.glob(os.path.join(workspace_root, '*')):
         continue
 
 def rename_to_stable(best):
-    """Rename workspace and its claude project dir to stable name."""
+    # Rename workspace and its Claude project dir to the stable name.
     if best == stable_name:
         return
     old_path = os.path.join(workspace_root, best)
