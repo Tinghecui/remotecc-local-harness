@@ -3,9 +3,11 @@
 # ccc — Remote Claude Code CLI
 #
 # Usage:
-#   ccc                     Start remote session (auto bridge + connect)
+#   ccc                     Start remote session (auto bridge + tunnel + connect)
 #   ccc setup               Interactive first-time setup wizard
-#   ccc status              Check bridge & VPS status
+#   ccc status              Check bridge, tunnel & VPS status
+#   ccc tunnel              Start persistent SSH tunnel manually
+#   ccc tunnel-stop         Stop persistent SSH tunnel
 #   ccc update              Update to latest version + redeploy VPS
 #   ccc help                Show this help
 #   ccc -d                  Start with --dangerously-skip-permissions
@@ -58,7 +60,7 @@ for arg in "$@"; do
     fi
 
     case "$arg" in
-        setup|status|help|update)
+        setup|status|help|update|tunnel|tunnel-stop)
             SUBCOMMAND="$arg"
             ;;
         resume)
@@ -101,13 +103,15 @@ case "$SUBCOMMAND" in
         echo "ccc — Remote Claude Code CLI"
         echo ""
         echo "Usage:"
-        echo "  ccc                     Start remote session (auto bridge + connect)"
+        echo "  ccc                     Start remote session (auto bridge + tunnel + connect)"
         echo "  ccc continue (or c)     Resume last session in this project"
         echo "  ccc resume              Open session picker on VPS"
         echo "  ccc resume <session-id> Resume a specific session"
+        echo "  ccc tunnel              Start persistent SSH tunnel manually"
+        echo "  ccc tunnel-stop         Stop persistent SSH tunnel"
         echo "  ccc setup               Interactive first-time setup wizard"
         echo "  ccc update              Update to latest version + redeploy VPS"
-        echo "  ccc status              Check bridge & VPS status"
+        echo "  ccc status              Check bridge, tunnel & VPS status"
         echo "  ccc help                Show this help"
         echo ""
         echo "Options:"
@@ -148,6 +152,30 @@ case "$SUBCOMMAND" in
 
         echo "  Downloading latest installer..."
         exec bash <(curl -fsSL "$INSTALLER_URL") "${INSTALL_ARGS[@]}"
+        ;;
+
+    tunnel)
+        exec "$SCRIPT_DIR/start-tunnel.sh" ${SSH_HOST_OVERRIDE:-}
+        ;;
+
+    tunnel-stop)
+        TUNNEL_STATE_FILE="${REMOTE_CC_TUNNEL_STATE_FILE:-/tmp/remote-cc-tunnel.json}"
+        if [ ! -f "$TUNNEL_STATE_FILE" ]; then
+            echo "No tunnel running (state file not found)."
+            exit 0
+        fi
+        TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+        if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            echo "Stopping tunnel (PID $TUNNEL_PID)..."
+            kill "$TUNNEL_PID"
+            sleep 1
+            kill -0 "$TUNNEL_PID" 2>/dev/null && kill -9 "$TUNNEL_PID" 2>/dev/null
+            echo "Tunnel stopped."
+        else
+            echo "Tunnel process not running (stale state file)."
+        fi
+        rm -f "$TUNNEL_STATE_FILE"
+        exit 0
         ;;
 esac
 
@@ -200,6 +228,64 @@ if ! curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
     fi
 else
     echo "Bridge already running on port $BRIDGE_PORT"
+fi
+
+# ── 自动启动持久化隧道 ──────────────────────────────────
+TUNNEL_STATE_FILE="${REMOTE_CC_TUNNEL_STATE_FILE:-/tmp/remote-cc-tunnel.json}"
+TUNNEL_RUNNING=false
+
+if [ -f "$TUNNEL_STATE_FILE" ] && command -v jq &>/dev/null; then
+    TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+    if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+        TUNNEL_RUNNING=true
+        echo "Tunnel already running (PID $TUNNEL_PID)"
+    fi
+fi
+
+if [ "$TUNNEL_RUNNING" = false ]; then
+    echo "Starting SSH tunnel..."
+
+    TUNNEL_LOG="/tmp/remote-cc-tunnel-$$.log"
+    nohup "$SCRIPT_DIR/start-tunnel.sh" ${SSH_HOST_OVERRIDE:-} > "$TUNNEL_LOG" 2>&1 </dev/null &
+    TUNNEL_STARTER_PID=$!
+
+    # 等待隧道就绪（状态文件出现且 PID 存活）
+    WAIT_MAX=15
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_MAX ]; do
+        if [ -f "$TUNNEL_STATE_FILE" ]; then
+            TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+            if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                echo "  Tunnel started (PID $TUNNEL_PID)"
+                TUNNEL_RUNNING=true
+                break
+            fi
+        fi
+        # 检查启动进程是否还活着
+        if ! kill -0 "$TUNNEL_STARTER_PID" 2>/dev/null; then
+            # 启动进程退出了，再检查一次状态文件
+            if [ -f "$TUNNEL_STATE_FILE" ]; then
+                TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+                if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                    echo "  Tunnel started (PID $TUNNEL_PID)"
+                    TUNNEL_RUNNING=true
+                    break
+                fi
+            fi
+            echo "  ERROR: Tunnel failed to start. Log:"
+            tail -20 "$TUNNEL_LOG"
+            exit 1
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    if [ "$TUNNEL_RUNNING" = false ]; then
+        echo "  ERROR: Tunnel did not start in ${WAIT_MAX}s"
+        echo "  Check log: $TUNNEL_LOG"
+        kill "$TUNNEL_STARTER_PID" 2>/dev/null
+        exit 1
+    fi
 fi
 
 # ── 连接 VPS ─────────────────────────────────────────────

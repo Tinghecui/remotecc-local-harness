@@ -1,11 +1,13 @@
 #!/bin/bash
 # ============================================================
-# SSH 连接到云端并启动 Claude Code（自动建立反向隧道）
-# 用法: ./connect.sh [SSH_HOST] [LOCAL_BRIDGE_PORT] [LOCAL_WORKDIR]
+# SSH 连接到云端并启动 Claude Code（使用持久化隧道）
+# 用法: ./connect.sh [SSH_HOST] [LOCAL_WORKDIR]
 # 示例: ./connect.sh
 #       ./connect.sh root@99.173.22.106
-#       ./connect.sh root@my-server 3100 ~/my-project
+#       ./connect.sh root@my-server ~/my-project
 # 不指定 LOCAL_WORKDIR 时默认使用当前目录 (pwd)
+#
+# 前置条件: 先运行 start-bridge.sh 和 start-tunnel.sh
 # ============================================================
 
 # 加载配置文件
@@ -33,12 +35,10 @@ for _arg in "$@"; do
 done
 
 CLOUD_HOST="${POSITIONAL_ARGS[0]:-${REMOTE_CC_HOST:-}}"
-BRIDGE_PORT="${POSITIONAL_ARGS[1]:-${REMOTE_CC_PORT:-3100}}"
-LOCAL_WORKDIR="${POSITIONAL_ARGS[2]:-$(pwd)}"
-REMOTE_PORT_START="${REMOTE_CC_REMOTE_PORT_START:-43000}"
-REMOTE_PORT_END="${REMOTE_CC_REMOTE_PORT_END:-48999}"
+LOCAL_WORKDIR="${POSITIONAL_ARGS[1]:-$(pwd)}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
 SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
+TUNNEL_STATE_FILE="${REMOTE_CC_TUNNEL_STATE_FILE:-/tmp/remote-cc-tunnel.json}"
 SSH_CONTROL_PATH="/tmp/remote-cc-ssh-$$-%r@%h:%p"
 SSH_BASE_ARGS=(-p "$SSH_PORT" -o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_PATH" -o "ControlPersist=60")
 SCP_BASE_ARGS=(-P "$SSH_PORT" -o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_PATH" -o "ControlPersist=60")
@@ -58,33 +58,6 @@ ssh_remote() {
         if [ "$rc" -eq 0 ]; then
             return 0
         fi
-
-        if [ "$attempt" -lt "$max_attempts" ]; then
-            sleep 2
-        fi
-        attempt=$((attempt + 1))
-    done
-
-    return "$rc"
-}
-
-ssh_remote_quick() {
-    ssh -o ConnectTimeout=10 "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "$@"
-}
-
-ssh_remote_quick_status() {
-    local attempt=1
-    local max_attempts=3
-    local rc
-
-    while [ "$attempt" -le "$max_attempts" ]; do
-        ssh_remote_quick "$@"
-        rc=$?
-        case "$rc" in
-            0|1)
-                return "$rc"
-                ;;
-        esac
 
         if [ "$attempt" -lt "$max_attempts" ]; then
             sleep 2
@@ -118,15 +91,49 @@ scp_remote() {
 
 if [ -z "$CLOUD_HOST" ]; then
     echo "Error: SSH host not specified."
-    echo "Usage: ./scripts/connect.sh <SSH_USER@HOST> [LOCAL_BRIDGE_PORT] [LOCAL_WORKDIR]"
+    echo "Usage: ./scripts/connect.sh <SSH_USER@HOST> [LOCAL_WORKDIR]"
     echo "   or: set REMOTE_CC_HOST in .remote-cc.env"
     exit 1
 fi
 
-if [ "$REMOTE_PORT_START" -gt "$REMOTE_PORT_END" ] 2>/dev/null; then
-    echo "Error: REMOTE_CC_REMOTE_PORT_START must be <= REMOTE_CC_REMOTE_PORT_END."
+# ── 检查持久化隧道 ──
+if [ ! -f "$TUNNEL_STATE_FILE" ]; then
+    echo "ERROR: Tunnel not running. Start it first:"
+    echo "  ./scripts/start-tunnel.sh"
     exit 1
 fi
+
+if ! command -v jq &>/dev/null; then
+    echo "ERROR: jq is required. Install it: brew install jq"
+    exit 1
+fi
+
+TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+if [ -z "$TUNNEL_PID" ] || ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    echo "ERROR: Tunnel process (PID ${TUNNEL_PID:-unknown}) is dead. Restart it:"
+    echo "  ./scripts/start-tunnel.sh"
+    rm -f "$TUNNEL_STATE_FILE"
+    exit 1
+fi
+
+# 从状态文件读取端口映射
+REMOTE_BRIDGE_PORT=$(jq -r '.tunnels["local-bridge"].remote_port' "$TUNNEL_STATE_FILE")
+if [ -z "$REMOTE_BRIDGE_PORT" ] || [ "$REMOTE_BRIDGE_PORT" = "null" ]; then
+    echo "ERROR: Cannot read bridge port from tunnel state file."
+    exit 1
+fi
+
+# 从状态文件构建 SSE MCP 列表（排除 local-bridge）
+REMOTE_SSE_MCP_LIST=""
+while IFS= read -r mcp_entry; do
+    [ -z "$mcp_entry" ] && continue
+    if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
+        REMOTE_SSE_MCP_LIST="$REMOTE_SSE_MCP_LIST
+$mcp_entry"
+    else
+        REMOTE_SSE_MCP_LIST="$mcp_entry"
+    fi
+done < <(jq -c '.tunnels | to_entries[] | select(.key != "local-bridge") | {name: .key, url: ("http://127.0.0.1:" + (.value.remote_port|tostring) + "/sse")}' "$TUNNEL_STATE_FILE")
 
 slugify() {
     local value="$1"
@@ -148,58 +155,6 @@ hash_string() {
         echo "ERROR: Need shasum, sha256sum, or openssl to derive workspace identity." >&2
         exit 1
     fi
-}
-
-extract_port_from_url() {
-    printf '%s' "$1" | sed -n 's|.*://[^:/]*:\([0-9][0-9]*\).*|\1|p'
-}
-
-rewrite_url_port() {
-    local url="$1"
-    local new_port="$2"
-    printf '%s' "$url" | sed -E "s#(https?://[^:/]+:)[0-9]+#\1${new_port}#"
-}
-
-REMOTE_PORTS_SEEN=""
-allocate_remote_port() {
-    local attempt=0
-    local max_attempts=100
-    local port
-    local rc
-
-    while [ "$attempt" -lt "$max_attempts" ]; do
-        port=$((REMOTE_PORT_START + RANDOM % (REMOTE_PORT_END - REMOTE_PORT_START + 1)))
-        attempt=$((attempt + 1))
-
-        case "$REMOTE_PORTS_SEEN" in
-            *":$port:"*) continue ;;
-        esac
-
-        ssh_remote_quick_status "
-            PORT='$port'
-            if (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print \$4}' | grep -Eq '(^|[.:])'\$PORT'$'; then
-                exit 0
-            fi
-            exit 1
-        " >/dev/null 2>&1
-        rc=$?
-
-        if [ "$rc" -eq 0 ]; then
-            continue
-        fi
-
-        if [ "$rc" -eq 1 ]; then
-            REMOTE_PORTS_SEEN="${REMOTE_PORTS_SEEN}:$port:"
-            printf '%s' "$port"
-            return 0
-        fi
-
-        echo "ERROR: Failed to inspect remote ports on $CLOUD_HOST" >&2
-        return 1
-    done
-
-    echo "ERROR: Could not allocate a free remote port after $max_attempts attempts." >&2
-    return 1
 }
 
 remote_stage_path() {
@@ -251,59 +206,6 @@ upload_dir_if_exists() {
 
         rm -rf "$stage_dir"
     fi
-}
-
-SSH_FORWARD_ARGS=()
-REMOTE_SSE_MCP_LIST=""
-DISCOVERED_LOCAL_PORTS=":$BRIDGE_PORT:"
-
-append_remote_mcp() {
-    local name="$1"
-    local url="$2"
-    local entry
-
-    if ! command -v jq >/dev/null 2>&1; then
-        return
-    fi
-
-    entry=$(jq -cn --arg name "$name" --arg url "$url" '{name: $name, url: $url}')
-    if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
-        REMOTE_SSE_MCP_LIST="$REMOTE_SSE_MCP_LIST
-$entry"
-    else
-        REMOTE_SSE_MCP_LIST="$entry"
-    fi
-}
-
-add_mcp_forward() {
-    local source_label="$1"
-    local mcp_name="$2"
-    local mcp_url="$3"
-    local local_port
-    local remote_port
-    local remote_url
-
-    local_port=$(extract_port_from_url "$mcp_url")
-    if [ -z "$local_port" ]; then
-        echo "  WARNING: Cannot extract port from $source_label '$mcp_name' URL: $mcp_url, skipping"
-        return
-    fi
-
-    if [ "$local_port" = "$BRIDGE_PORT" ]; then
-        return
-    fi
-
-    case "$DISCOVERED_LOCAL_PORTS" in
-        *":$local_port:"*) return ;;
-    esac
-    DISCOVERED_LOCAL_PORTS="${DISCOVERED_LOCAL_PORTS}:$local_port:"
-
-    remote_port=$(allocate_remote_port) || exit 1
-    remote_url=$(rewrite_url_port "$mcp_url" "$remote_port")
-
-    echo "  Found $source_label: $mcp_name → local $local_port / remote $remote_port"
-    SSH_FORWARD_ARGS+=(-R "$remote_port:localhost:$local_port")
-    append_remote_mcp "$mcp_name" "$remote_url"
 }
 
 SESSION_ID="${REMOTE_CC_SESSION_ID:-$(date +%Y%m%d-%H%M%S)-$$-$RANDOM}"
@@ -409,15 +311,27 @@ echo "========================================="
 echo "  Remote CC - Connect"
 echo "========================================="
 echo "  Cloud:            $CLOUD_HOST"
-echo "  Local Bridge:     localhost:$BRIDGE_PORT"
 echo "  Local Workdir:    $LOCAL_WORKDIR"
 echo "  Workspace Mode:   $WORKSPACE_MODE"
 echo "  Session:          $SESSION_ID"
 echo "  Remote Workspace: $REMOTE_WORKSPACE"
+echo "  Tunnel PID:       $TUNNEL_PID"
+echo "  Remote Bridge:    localhost:$REMOTE_BRIDGE_PORT"
+
+# 显示 MCP 隧道信息
+if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
+    echo "  MCP tunnels:"
+    while IFS= read -r _entry; do
+        [ -z "$_entry" ] && continue
+        _name=$(echo "$_entry" | jq -r '.name')
+        _url=$(echo "$_entry" | jq -r '.url')
+        echo "    $_name → $_url"
+    done <<< "$REMOTE_SSE_MCP_LIST"
+fi
 echo ""
 
-# 提醒已有会话，但不阻止并行连接
-EXISTING_TUNNELS=$(ps -axo pid=,command= | awk -v host="$CLOUD_HOST" '
+# 提醒已有会话
+EXISTING_SESSIONS=$(ps -axo pid=,command= | awk -v host="$CLOUD_HOST" '
     index($0, "ssh ") && index($0, host) && index($0, "/opt/remote-cc/prepare-session.sh") {
         pid = $1
         $1 = ""
@@ -425,54 +339,12 @@ EXISTING_TUNNELS=$(ps -axo pid=,command= | awk -v host="$CLOUD_HOST" '
         print pid "\t" $0
     }
 ')
-if [ -n "$EXISTING_TUNNELS" ]; then
+if [ -n "$EXISTING_SESSIONS" ]; then
     echo "  Note: Found existing Remote CC session(s) for $CLOUD_HOST."
-    echo "        This session will use isolated remote ports."
+    echo "        All sessions share the same persistent tunnel."
     echo ""
 fi
 
-# 检查本地 Bridge 是否在运行
-if ! curl -s "http://127.0.0.1:$BRIDGE_PORT/health" > /dev/null 2>&1; then
-    echo "WARNING: Local MCP Bridge is not running on port $BRIDGE_PORT"
-    echo "  Start it first:  ./scripts/start-bridge.sh"
-    echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
-REMOTE_BRIDGE_PORT=$(allocate_remote_port) || exit 1
-SSH_FORWARD_ARGS+=(-R "$REMOTE_BRIDGE_PORT:localhost:$BRIDGE_PORT")
-echo "  Remote Bridge:    localhost:$REMOTE_BRIDGE_PORT → local:$BRIDGE_PORT"
-
-# ============================================================
-# 检测本地 SSE 类型 MCP 服务器，自动添加隧道
-# ============================================================
-if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
-    while IFS= read -r mcp_entry; do
-        [ -z "$mcp_entry" ] && continue
-        mcp_name=$(echo "$mcp_entry" | jq -r '.name')
-        mcp_url=$(echo "$mcp_entry" | jq -r '.url')
-        add_mcp_forward "SSE MCP" "$mcp_name" "$mcp_url"
-    done < <(jq -r '.mcpServers // {} | to_entries[] | select(.value.type == "sse") | {name: .key, url: .value.url} | @json' "$HOME/.claude.json" 2>/dev/null)
-fi
-
-# ============================================================
-# 检测 stdio MCP 代理（由 start-bridge.sh 启动）
-# ============================================================
-STDIO_PROXIES_FILE="/tmp/remote-cc-stdio-proxies.json"
-if [ -f "$STDIO_PROXIES_FILE" ]; then
-    while IFS= read -r proxy_entry; do
-        [ -z "$proxy_entry" ] && continue
-        mcp_name=$(echo "$proxy_entry" | jq -r '.name')
-        mcp_url=$(echo "$proxy_entry" | jq -r '.url')
-        add_mcp_forward "stdio proxy" "$mcp_name" "$mcp_url"
-    done < "$STDIO_PROXIES_FILE"
-fi
-
-echo ""
 echo "Connecting... (Ctrl+D or /exit to quit)"
 echo ""
 
@@ -496,16 +368,13 @@ upload_dir_if_exists "$LOCAL_WORKDIR/.claude/commands" "local-commands-project" 
 upload_dir_if_exists "$HOME/.claude/agents" "local-agents-user" ""
 upload_dir_if_exists "$LOCAL_WORKDIR/.claude/agents" "local-agents-project" ""
 
-# 上传本会话专属的 SSE MCP 列表
+# 上传 SSE MCP 列表
 if [ -n "$REMOTE_SSE_MCP_LIST" ]; then
     printf '%s\n' "$REMOTE_SSE_MCP_LIST" | ssh_remote "cat > '$(remote_stage_path "local-sse-mcps.json")'"
     echo "  Project MCP list: uploaded"
 fi
 
-# SSH 反向隧道 + 启动 claude
-# -t: 分配伪终端（claude 需要交互式终端）
-# -R: 反向隧道，让云端 localhost:REMOTE_PORT 指向本地 localhost:LOCAL_PORT
-# SSH with keepalive and auto-reconnect
+# SSH 连接启动 claude（不再需要 -R 隧道参数）
 MAX_RETRIES=5
 RETRY_DELAY=3
 
@@ -526,8 +395,6 @@ for _attempt in $(seq 1 $MAX_RETRIES); do
         "${SSH_BASE_ARGS[@]}" \
         -o ServerAliveInterval=30 \
         -o ServerAliveCountMax=3 \
-        -o ExitOnForwardFailure=yes \
-        "${SSH_FORWARD_ARGS[@]}" \
         "$CLOUD_HOST" \
         "$REMOTE_CMD"
 

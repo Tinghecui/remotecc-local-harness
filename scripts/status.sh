@@ -24,6 +24,29 @@ else
 fi
 echo ""
 
+# 检查持久化隧道
+echo "[SSH Tunnel]"
+TUNNEL_STATE_FILE="${REMOTE_CC_TUNNEL_STATE_FILE:-/tmp/remote-cc-tunnel.json}"
+if [ -f "$TUNNEL_STATE_FILE" ] && command -v jq &>/dev/null; then
+    TUNNEL_PID=$(jq -r '.pid // empty' "$TUNNEL_STATE_FILE" 2>/dev/null)
+    if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+        TUNNEL_HOST=$(jq -r '.host // "unknown"' "$TUNNEL_STATE_FILE")
+        TUNNEL_STARTED=$(jq -r '.started_at // "unknown"' "$TUNNEL_STATE_FILE")
+        echo "  Status:  RUNNING (PID $TUNNEL_PID)"
+        echo "  Host:    $TUNNEL_HOST"
+        echo "  Started: $TUNNEL_STARTED"
+        echo "  Tunnels:"
+        jq -r '.tunnels | to_entries[] | "    \(.key): local:\(.value.local_port) → remote:\(.value.remote_port)"' "$TUNNEL_STATE_FILE"
+    else
+        echo "  Status:  DEAD (stale PID ${TUNNEL_PID:-unknown})"
+        echo "  Start:   ./scripts/start-tunnel.sh"
+    fi
+else
+    echo "  Status:  NOT RUNNING"
+    echo "  Start:   ./scripts/start-tunnel.sh"
+fi
+echo ""
+
 # 检查云端连通性
 CLOUD_HOST="${1:-${REMOTE_CC_HOST:-}}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
