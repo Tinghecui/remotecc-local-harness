@@ -109,16 +109,24 @@ set -e
 apt-get update -qq 2>/dev/null
 apt-get install -y -qq curl git jq 2>/dev/null
 
-if ! command -v claude &> /dev/null && ! test -f ~/.local/bin/claude; then
-    curl -fsSL https://claude.ai/install.sh | bash 2>&1
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# 创建非 root 用户（Claude Code 禁止 root 使用 --dangerously-skip-permissions）
+if ! id cc &>/dev/null; then
+    useradd -m -s /bin/bash cc
+    echo "  User cc: created"
+else
+    echo "  User cc: exists"
 fi
-echo "  Claude Code: $(~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null)"
 
-# 安装插件
-export PATH="$HOME/.local/bin:$PATH"
-claude plugins marketplace add https://github.com/anthropics/skills.git 2>/dev/null || true
-claude plugins install document-skills@anthropic-agent-skills 2>/dev/null && \
+# 以 cc 用户安装 Claude Code
+if ! su - cc -c 'command -v claude &>/dev/null || test -f ~/.local/bin/claude' 2>/dev/null; then
+    su - cc -c 'curl -fsSL https://claude.ai/install.sh | bash' 2>&1
+    su - cc -c 'echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc'
+fi
+echo "  Claude Code: $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
+
+# 以 cc 用户安装插件
+su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins marketplace add https://github.com/anthropics/skills.git 2>/dev/null || true'
+su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude plugins install document-skills@anthropic-agent-skills 2>/dev/null' && \
     echo "  Plugin: document-skills installed" || \
     echo "  Plugin: document-skills install skipped (may need manual install)"
 REMOTE_INSTALL
@@ -126,9 +134,8 @@ REMOTE_INSTALL
 # 配置 Hook + MCP
 ssh "${SSH_PORT_FLAG[@]}" "$REMOTE_HOST" bash << REMOTE_CONFIG
 set -e
-export PATH="\$HOME/.local/bin:\$PATH"
 
-# Hook + prepare-session
+# Hook + prepare-session（全局目录，root 部署）
 mkdir -p /opt/remote-cc/hooks
 cp /tmp/remote-cc-setup/hooks/block-builtin.sh /opt/remote-cc/hooks/
 chmod +x /opt/remote-cc/hooks/block-builtin.sh
@@ -137,16 +144,17 @@ chmod +x /opt/remote-cc/prepare-session.sh
 cp /tmp/remote-cc-setup/memory-sync.sh /opt/remote-cc/
 chmod +x /opt/remote-cc/memory-sync.sh
 
-# Settings
-mkdir -p ~/.claude
-cp /tmp/remote-cc-setup/claude-config/settings.json ~/.claude/settings.json
+# Settings → cc 用户目录
+CC_HOME=\$(eval echo ~cc)
+mkdir -p "\$CC_HOME/.claude"
+cp /tmp/remote-cc-setup/claude-config/settings.json "\$CC_HOME/.claude/settings.json"
 
-# MCP (SSE, no auth - secured by SSH tunnel)
-claude mcp remove local-bridge 2>/dev/null || true
-claude mcp add -t sse -s user -- local-bridge http://127.0.0.1:${BRIDGE_PORT}/sse 2>&1
+# MCP (SSE, no auth - secured by SSH tunnel) → cc 用户
+su - cc -c 'export PATH="\$HOME/.local/bin:\$PATH" && claude mcp remove local-bridge 2>/dev/null || true && claude mcp add -t sse -s user -- local-bridge http://127.0.0.1:${BRIDGE_PORT}/sse' 2>&1
 
-# workspace（CLAUDE.md 由 prepare-session.sh 动态生成）
-mkdir -p ~/workspace
+# workspace → cc 用户目录
+mkdir -p "\$CC_HOME/workspace"
+chown -R cc:cc "\$CC_HOME/.claude" "\$CC_HOME/workspace"
 
 # Cleanup
 rm -rf /tmp/remote-cc-setup

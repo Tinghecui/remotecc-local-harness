@@ -413,7 +413,9 @@ if [ ${#CLAUDE_EXTRA_ARGS[@]} -gt 0 ]; then
     done
 fi
 
-REMOTE_CMD="export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT='$REMOTE_BRIDGE_PORT' && export REMOTE_CC_LOCAL_DIR=\$(printf '%s' '$LOCAL_WORKDIR_B64' | base64 -d) && export REMOTE_CC_SESSION_ID='$SESSION_ID' && export REMOTE_CC_SESSION_TMP='$REMOTE_SESSION_DIR' && export REMOTE_CC_WORKSPACE_NAME='$WORKSPACE_NAME' && /opt/remote-cc/prepare-session.sh && cd \"\$HOME/workspace/$WORKSPACE_NAME\" && $CLAUDE_CMD"
+# 上传的文件 owner 是 root，需要 chown 给 cc 用户
+# 然后以 cc 用户运行 prepare-session + claude（避免 root 限制）
+REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT=\"$REMOTE_BRIDGE_PORT\" && export REMOTE_CC_LOCAL_DIR=\"\$(printf \"%s\" \"$LOCAL_WORKDIR_B64\" | base64 -d)\" && export REMOTE_CC_SESSION_ID=\"$SESSION_ID\" && export REMOTE_CC_SESSION_TMP=\"$REMOTE_SESSION_DIR\" && export REMOTE_CC_WORKSPACE_NAME=\"$WORKSPACE_NAME\" && /opt/remote-cc/prepare-session.sh && cd ~/workspace/$WORKSPACE_NAME && $CLAUDE_CMD'"
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \

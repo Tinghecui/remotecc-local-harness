@@ -36,16 +36,24 @@ set -e
 apt-get update -qq 2>/dev/null
 apt-get install -y -qq curl git jq 2>/dev/null
 
-# Claude Code（原生安装）
-if ! command -v claude &> /dev/null && ! test -f ~/.local/bin/claude; then
-    echo "  Installing Claude Code..."
-    curl -fsSL https://claude.ai/install.sh | bash
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# 创建非 root 用户（Claude Code 禁止 root 使用 --dangerously-skip-permissions）
+if ! id cc &>/dev/null; then
+    useradd -m -s /bin/bash cc
+    echo "  User cc: created"
 else
-    echo "  Claude Code already installed"
+    echo "  User cc: exists"
 fi
 
-echo "  Claude Code: $(~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null)"
+# 以 cc 用户安装 Claude Code
+if ! su - cc -c 'command -v claude &>/dev/null || test -f ~/.local/bin/claude' 2>/dev/null; then
+    echo "  Installing Claude Code for cc user..."
+    su - cc -c 'curl -fsSL https://claude.ai/install.sh | bash' 2>&1
+    su - cc -c 'echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc'
+else
+    echo "  Claude Code already installed for cc user"
+fi
+
+echo "  Claude Code: $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
 INSTALL_EOF
 
 # ---- 配置 ----
@@ -53,7 +61,7 @@ echo "[3/4] Configuring..."
 ssh "$REMOTE_HOST" bash << CONF_EOF
 set -e
 
-# Hook 脚本 + prepare-session
+# Hook 脚本 + prepare-session（全局目录，root 部署）
 mkdir -p /opt/remote-cc/hooks
 cp /tmp/remote-cc-setup/hooks/block-builtin.sh /opt/remote-cc/hooks/
 chmod +x /opt/remote-cc/hooks/block-builtin.sh
@@ -62,17 +70,17 @@ chmod +x /opt/remote-cc/prepare-session.sh
 cp /tmp/remote-cc-setup/memory-sync.sh /opt/remote-cc/
 chmod +x /opt/remote-cc/memory-sync.sh
 
-# Claude Code settings（Hook 配置）
-mkdir -p ~/.claude
-cp /tmp/remote-cc-setup/claude-config/settings.json ~/.claude/settings.json
+# Claude Code settings → cc 用户目录
+CC_HOME=\$(eval echo ~cc)
+mkdir -p "\$CC_HOME/.claude"
+cp /tmp/remote-cc-setup/claude-config/settings.json "\$CC_HOME/.claude/settings.json"
 
-# MCP server（用 CLI 添加，SSE 类型，无认证）
-export PATH="\$HOME/.local/bin:\$PATH"
-claude mcp remove local-bridge 2>/dev/null || true
-claude mcp add -t sse -s user -- local-bridge $MCP_SSE_URL 2>&1
+# MCP server → cc 用户
+su - cc -c 'export PATH="\$HOME/.local/bin:\$PATH" && claude mcp remove local-bridge 2>/dev/null || true && claude mcp add -t sse -s user -- local-bridge $MCP_SSE_URL' 2>&1
 
-# workspace（CLAUDE.md 由 prepare-session.sh 动态生成）
-mkdir -p ~/workspace
+# workspace → cc 用户目录
+mkdir -p "\$CC_HOME/workspace"
+chown -R cc:cc "\$CC_HOME/.claude" "\$CC_HOME/workspace"
 
 # 清理
 rm -rf /tmp/remote-cc-setup
@@ -81,12 +89,12 @@ CONF_EOF
 # ---- 验证 ----
 echo "[4/4] Verifying..."
 ssh "$REMOTE_HOST" bash << 'VERIFY_EOF'
-export PATH="$HOME/.local/bin:$PATH"
-echo "  Claude:   $(claude --version)"
+CC_HOME=$(eval echo ~cc)
+echo "  Claude:   $(su - cc -c '~/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null')"
 echo "  Hook:     $(test -x /opt/remote-cc/hooks/block-builtin.sh && echo 'OK' || echo 'MISSING')"
-echo "  Settings: $(test -f ~/.claude/settings.json && echo 'OK' || echo 'MISSING')"
+echo "  Settings: $(test -f "$CC_HOME/.claude/settings.json" && echo 'OK' || echo 'MISSING')"
 echo "  MCP:"
-claude mcp list 2>&1 | grep -E "local-bridge|Status" || true
+su - cc -c 'export PATH="$HOME/.local/bin:$PATH" && claude mcp list 2>&1' | grep -E "local-bridge|Status" || true
 VERIFY_EOF
 
 echo ""

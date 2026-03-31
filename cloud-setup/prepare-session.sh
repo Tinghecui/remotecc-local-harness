@@ -342,7 +342,7 @@ When using the Agent tool to spawn subagents, the subagent also has access to \`
 Plans, memory, and task files live on the **cloud VPS** under \`~/.claude/\`. For these files:
 - **Use built-in Read/Write/Edit tools** (they are NOT blocked for \`~/.claude/*\` paths)
 - Do NOT use \`local__*\` MCP tools for cloud paths — they operate on the local Mac filesystem
-- Examples of cloud paths: \`/root/.claude/plans/\`, \`/root/.claude/projects/.../memory/\`
+- Examples of cloud paths: \`$HOME/.claude/plans/\`, \`$HOME/.claude/projects/.../memory/\`
 
 When spawning Plan or other subagents that need to write plans/memory, do NOT include "use local__* tools" instructions for cloud-side file operations.
 
