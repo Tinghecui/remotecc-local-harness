@@ -39,8 +39,9 @@ REMOTE_PORT_START="${REMOTE_CC_REMOTE_PORT_START:-43000}"
 REMOTE_PORT_END="${REMOTE_CC_REMOTE_PORT_END:-48999}"
 SSH_PORT="${REMOTE_CC_SSH_PORT:-22}"
 SSH_KEY="${REMOTE_CC_SSH_KEY:-}"
-SSH_BASE_ARGS=(-p "$SSH_PORT")
-SCP_BASE_ARGS=(-P "$SSH_PORT")
+SSH_CONTROL_PATH="/tmp/remote-cc-ssh-$$-%r@%h:%p"
+SSH_BASE_ARGS=(-p "$SSH_PORT" -o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_PATH" -o "ControlPersist=60")
+SCP_BASE_ARGS=(-P "$SSH_PORT" -o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_PATH" -o "ControlPersist=60")
 if [ -n "$SSH_KEY" ]; then
     SSH_BASE_ARGS+=(-i "$SSH_KEY")
     SCP_BASE_ARGS+=(-i "$SSH_KEY")
@@ -244,7 +245,8 @@ upload_dir_if_exists() {
         done
 
         if [ "$had_entries" -eq 1 ]; then
-            scp_remote -r "$stage_dir" "$CLOUD_HOST:$(remote_stage_path "$dest_name")"
+            ssh "${SSH_BASE_ARGS[@]}" "$CLOUD_HOST" "mkdir -p '$(remote_stage_path "$dest_name")'"
+            scp_remote -r "$stage_dir"/* "$CLOUD_HOST:$(remote_stage_path "$dest_name")/"
         fi
 
         rm -rf "$stage_dir"
@@ -517,7 +519,7 @@ fi
 
 # 上传的文件 owner 是 root，需要 chown 给 cc 用户
 # 然后以 cc 用户运行 prepare-session + claude（避免 root 限制）
-REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HOME/.local/bin:\$PATH && claude mcp remove local-bridge >/dev/null 2>&1 || true && export BRIDGE_PORT=\"$REMOTE_BRIDGE_PORT\" && export REMOTE_CC_LOCAL_DIR=\"\$(printf \"%s\" \"$LOCAL_WORKDIR_B64\" | base64 -d)\" && export REMOTE_CC_SESSION_ID=\"$SESSION_ID\" && export REMOTE_CC_SESSION_TMP=\"$REMOTE_SESSION_DIR\" && export REMOTE_CC_WORKSPACE_NAME=\"$WORKSPACE_NAME\" && /opt/remote-cc/prepare-session.sh && cd ~/workspace/$WORKSPACE_NAME && $CLAUDE_CMD'"
+REMOTE_CMD="chown -R cc:cc '$REMOTE_SESSION_DIR' && su - cc -c 'export PATH=\$HOME/.local/bin:\$PATH && export BRIDGE_PORT=\"$REMOTE_BRIDGE_PORT\" && export REMOTE_CC_LOCAL_DIR=\"\$(printf \"%s\" \"$LOCAL_WORKDIR_B64\" | base64 -d)\" && export REMOTE_CC_SESSION_ID=\"$SESSION_ID\" && export REMOTE_CC_SESSION_TMP=\"$REMOTE_SESSION_DIR\" && export REMOTE_CC_WORKSPACE_NAME=\"$WORKSPACE_NAME\" && /opt/remote-cc/prepare-session.sh && cd ~/workspace/$WORKSPACE_NAME && $CLAUDE_CMD'"
 
 for _attempt in $(seq 1 $MAX_RETRIES); do
     ssh -t \
