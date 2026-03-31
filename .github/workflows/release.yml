@@ -47,11 +47,19 @@ jobs:
           # Fresh install
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
 
+          # Fresh install + deploy in one command
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | \\
+            bash -s -- --host root@your-vps-ip
+
           # Install this specific version
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash -s -- --version $TAG
 
           # Update existing installation
           ccc update
+
+          # Re-run the hosted installer and redeploy using saved config
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | \\
+            bash -s -- --deploy
           \`\`\`
           EOF
 

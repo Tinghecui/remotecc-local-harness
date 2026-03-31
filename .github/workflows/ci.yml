@@ -71,18 +71,29 @@ jobs:
 
       - name: Test install script (local clone)
         run: |
-          # Simulate install from existing clone
-          export REMOTE_CC_HOME="$HOME/.remote-cc-test"
-          cp -r . "$REMOTE_CC_HOME"
-          cd "$REMOTE_CC_HOME/local-bridge"
-          npm install --silent
-          chmod +x "$REMOTE_CC_HOME/scripts/"*.sh "$REMOTE_CC_HOME/setup.sh" "$REMOTE_CC_HOME/install.sh"
+          export TEST_HOME="$RUNNER_TEMP/remote-cc-home"
+          export REMOTE_CC_HOME="$TEST_HOME/.remote-cc-test"
+          export REMOTE_CC_REPO_URL="$PWD"
 
-          # Verify ccc help works
-          "$REMOTE_CC_HOME/scripts/ccc.sh" help
+          mkdir -p "$TEST_HOME/projects"
 
-          # Cleanup
-          rm -rf "$REMOTE_CC_HOME"
+          # Fresh install through the real installer entrypoint.
+          HOME="$TEST_HOME" ./install.sh --dir "$REMOTE_CC_HOME"
+          "$TEST_HOME/.local/bin/ccc" help
+
+          # Non-interactive config generation for one-command setup mode.
+          HOME="$TEST_HOME" ./install.sh \
+            --dir "$REMOTE_CC_HOME" \
+            --host root@example.com \
+            --ssh-port 2222 \
+            --bridge-port 4100 \
+            --roots "$TEST_HOME/projects" \
+            --skip-deploy
+
+          grep -q '^REMOTE_CC_HOST=root@example.com$' "$REMOTE_CC_HOME/.remote-cc.env"
+          grep -q '^REMOTE_CC_SSH_PORT=2222$' "$REMOTE_CC_HOME/.remote-cc.env"
+          grep -q '^REMOTE_CC_PORT=4100$' "$REMOTE_CC_HOME/.remote-cc.env"
+          grep -q "^REMOTE_CC_ROOTS=$TEST_HOME/projects$" "$REMOTE_CC_HOME/.remote-cc.env"
 
       - name: Test bridge builds
         working-directory: local-bridge

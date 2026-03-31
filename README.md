@@ -44,7 +44,33 @@
 - 云端：Ubuntu 22/24
 - 已配置 SSH 免密登录：`ssh-copy-id root@<VPS_IP>`
 
-### 1. 配置
+### 1. 一次命令安装
+
+只安装本地 CLI：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tinghecui/remotecc-local-harness/main/install.sh | bash
+```
+
+安装并直接完成配置 + 部署：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tinghecui/remotecc-local-harness/main/install.sh | \
+  bash -s -- \
+    --host root@<VPS_IP> \
+    --ssh-port 22 \
+    --bridge-port 3100 \
+    --roots "$HOME/projects,$HOME/Desktop"
+```
+
+如果你已经装过，只想重新走一次线上 installer 并按现有配置重新部署：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tinghecui/remotecc-local-harness/main/install.sh | \
+  bash -s -- --deploy
+```
+
+### 2. 手动配置
 
 ```bash
 git clone <repo-url> remote-cc
@@ -61,7 +87,13 @@ REMOTE_CC_ROOTS=~/projects,~/Desktop
 MCP_HOST=127.0.0.1
 ```
 
-### 2. 一键部署到云端
+或者安装完 CLI 之后直接运行交互向导：
+
+```bash
+ccc setup
+```
+
+### 3. 一键部署到云端
 
 ```bash
 ./setup.sh
@@ -77,7 +109,7 @@ MCP_HOST=127.0.0.1
 - hook / MCP / `prepare-session.sh` / `memory-sync.sh` 配置
 - 一次本地到云端的链路验证
 
-### 3. 日常使用
+### 4. 日常使用
 
 ```bash
 # 终端 1：启动本地 bridge
